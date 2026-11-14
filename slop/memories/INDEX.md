@@ -1,6 +1,6 @@
 # Memory index
 
-Example Claude Code memories, in the format Claude Code saves them, with `MEMORY.md` as their index. Each rule is also in `../AGENTS.md`, so these are only needed if you want the rules as Claude Code memories too.
+Example Claude Code memories, in the format Claude Code saves them, with `MEMORY.md` as their index. Each rule is also in `../../AGENTS.md`, so these are only needed if you want the rules as Claude Code memories too.
 
 | Memory | Where the rule lives in AGENTS.md |
 |---|---|

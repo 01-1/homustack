@@ -2,7 +2,7 @@
 
 Rules, skills and small tools for running many coding agents at once, mostly Claude Code and Codex inside [T3 Code](https://github.com/pingdotgg/t3code). Built while running dozens of agents on one project. Each folder stands alone; its own README has the details. Everything needs Python 3 (standard library only) and runs on Linux; the T3 helpers need the `t3` CLI with T3 Code running.
 
-`slop/` holds rougher, less-tested extras.
+`slop/` holds rougher, less-tested extras that I do not recommend using.
 
 ## Folders
 
@@ -16,7 +16,9 @@ Rules, skills and small tools for running many coding agents at once, mostly Cla
 
 **`usage-meters/`**: meters and alerts for Claude and Codex subscription usage served through [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) proxies. `usage-alert` pops up when every account has hit a cap; `claude-usage` is the meter with usage boxes and rate ladders per category; `usage-dashboard` is a local page; `pace` starts a helper for a long-running T3 thread when usage allows. Status: usage-alert and the dashboard worked in use; `claude-usage` works but is tied to one setup (see its Limits section); `pace` was never switched on. Tests: in each subfolder, for example `cd usage-meters/claude-usage && HOME=$(mktemp -d) python3 -B -m unittest test_boxes` (one file at a time, or `discover -p 'test_*.py'` for all 557). Install: see `usage-meters/README.md`.
 
-**`slop/agent-rules/`**: `AGENTS.md`, a general rule file for coding agents (reading the human, doing the work, asking first, accuracy, subagents and models, messaging agents in T3 Code, helper scripts, replies); `LESSONS.md`, 19 lessons from the multi-agent project; and three example Claude Code memories. Status: reference; the rules were used, the file as a whole was not. No tests. Install: copy `AGENTS.md` into a project and add `@AGENTS.md` to its `CLAUDE.md` (see its README).
+**`AGENTS.md`**: a general rule file for coding agents (reading the human, doing the work, asking first, accuracy, subagents and models, messaging agents in T3 Code, helper scripts, replies). Status: the rules were used, the file as a whole was not. No tests. Install: copy `AGENTS.md` into a project and add `@AGENTS.md` to its `CLAUDE.md` (Claude Code reads `CLAUDE.md`, not `AGENTS.md`), or copy it to `~/.claude/CLAUDE.md` for every project. It names seven skills: stop-all-threads from `agent-skills/` and six from `slop/slop-skills/` (intent-reviewer, record-standing-rule, draft-for-review, live-system-change, encrypted-backup, ping-owning-thread); install those too. Check one rule before use: it starts T3 Code subagents with `delegate_task`, while T3 Code's own guidance prefers the native subagent tool when the child uses the same provider and settings.
+
+**`slop/LESSONS.md`** and **`slop/memories/`**: 19 lessons from the multi-agent project, and three example Claude Code memories. Status: reference. No tests. Install: see `slop/README.md` for the memories.
 
 **`slop/slop-skills/`**: twelve more skills: intent-reviewer, record-standing-rule, coordinator-handoff, draft-for-review, now-list, live-system-change, research-digest, dual-agent, babysit, making-faster, ping-owning-thread and encrypted-backup. Several skills in `agent-skills/` point at four of these (record-standing-rule, coordinator-handoff, live-system-change, dual-agent). Status: rewritten from project-specific versions, lightly used. No tests. Install as for `agent-skills/`. dual-agent derives from a tstack skill; keep its `LICENSE-tstack`.
 

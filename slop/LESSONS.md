@@ -4,7 +4,7 @@ From a two-week multi-agent project: dozens of T3 Code agent threads, each with 
 
 ## Process
 
-1. **"Done" was measured on the artifact, not on the behaviour.** A ledger, a rule and a checker each passed while nothing invoked them, and ownership stopped at each handoff between the agent that wrote the rule, the one that triaged it and the one that built it. *Do instead:* a fix is complete only when something triggers it automatically and it has been seen working end to end; one owner keeps the obligation until then. (`../fix-ledger` is the tool built from this.)
+1. **"Done" was measured on the artifact, not on the behaviour.** A ledger, a rule and a checker each passed while nothing invoked them, and ownership stopped at each handoff between the agent that wrote the rule, the one that triaged it and the one that built it. *Do instead:* a fix is complete only when something triggers it automatically and it has been seen working end to end; one owner keeps the obligation until then. (`fix-ledger` is the tool built from this.)
 
 2. **Queued messages to busy agents weren't read.** Agents kept long turns running, so a queued message waited for the turn to end, and messages sent during a compaction or start-up gap stayed queued until a T3 patch promoted them to steers. *Do instead:* send with `--mode auto` (steer).
 
@@ -26,7 +26,7 @@ From a two-week multi-agent project: dozens of T3 Code agent threads, each with 
 
 10. **A router added its own guesses.** Forwarding a human's request with a guessed interpretation sent the owner the wrong spec, and the human had to correct it four times. *Do instead:* forward the exact words and why that owner, nothing more.
 
-11. **Retiring a role into one replacement just moved the overload.** One lead role was first handed whole to a single successor. The rule became: split so that no receiving thread gets more than 50% of the original load, and create new agents as well as offloading to existing ones; the next split gave the largest receiver about 35%. (See `../../agent-skills/retire-role`.)
+11. **Retiring a role into one replacement just moved the overload.** One lead role was first handed whole to a single successor. The rule became: split so that no receiving thread gets more than 50% of the original load, and create new agents as well as offloading to existing ones; the next split gave the largest receiver about 35%. (See `../agent-skills/retire-role`.)
 
 ## Tools and platform
 
@@ -34,7 +34,7 @@ From a two-week multi-agent project: dozens of T3 Code agent threads, each with 
 
 13. **Steered messages produce false "user declined" results** in Claude Code (a known bug, anthropics/claude-code issues #89231, #108736, #29499): the incoming message cancels running tool calls and reports one as declined by the user. An agent that takes it at face value stops and waits for a human who never asked. *Do instead:* only a human's own message means stop; check whether the action happened, redo it, carry on.
 
-14. **Scripts can list T3 threads but can't stop or settle them.** T3 caps a script's token at approval-required while agent threads run full-access, so a script's interrupt and settle calls fail with `runtime_mode_escalation_denied`. *Do instead:* stop and settle from an agent's own T3 tools (`../../agent-skills/stop-all-threads`, `../../agent-skills/settle-all-threads`).
+14. **Scripts can list T3 threads but can't stop or settle them.** T3 caps a script's token at approval-required while agent threads run full-access, so a script's interrupt and settle calls fail with `runtime_mode_escalation_denied`. *Do instead:* stop and settle from an agent's own T3 tools (`../agent-skills/stop-all-threads`, `../agent-skills/settle-all-threads`).
 
 15. **A retried thread start can create a duplicate agent.** The launcher that started the final run's threads avoided it by giving every start a fixed `--client-request-id` and retrying once with the same id. *Do instead:* the same, for any script or agent that starts threads.
 
