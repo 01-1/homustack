@@ -1,0 +1,10 @@
+[Unit]
+Description=Fix ledger check for @REPO@ every 15 minutes (backup trigger)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=@NAME@.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# REAL stop with no confirmation, options passed through.
+#   ka [options]       a human at an interactive terminal: `agents-killall --yes`.
+#                      Refused beneath the [ka_open] recovery agent.
+#   ka open [options]  the recovery agent, no terminal needed: `agents-killall --open`.
+#                      Same stop, but the [ka_open] keep groups stay running. Allowed only
+#                      beneath the configured recovery agent, or when the configured gate
+#                      exits 0. The recovery agent itself is never stopped by it. Its settings
+#                      come only from ~/.config/agents-killall/config.toml (home directory from
+#                      the password database), never from the caller's environment or options.
+# Both run /usr/bin/python3 -I, so PATH and PYTHON* variables can't swap the interpreter or
+# its modules.
+# agents-killall itself refuses root, and refuses to run beneath, or inside the cgroup or
+# unit of, anything it would stop.
+set -euo pipefail
+# The agents-killall next to this script's real location (symlinks resolved).
+here=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+if [[ ${1:-} == open ]]; then
+    shift
+    exec /usr/bin/python3 -I "$here/agents-killall" --open "$@"
+fi
+if [[ ! -t 0 || ! -t 1 ]]; then
+    printf 'ka requires interactive stdin and stdout; run agents-killall (dry run) to inspect.\n' >&2
+    exit 2
+fi
+exec /usr/bin/python3 -I "$here/agents-killall" --yes "$@"

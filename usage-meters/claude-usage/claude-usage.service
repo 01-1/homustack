@@ -1,0 +1,7 @@
+[Unit]
+Description=Check usage boxes, subscription caps and Modal billing
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-usage --log --warn
+UMask=0077

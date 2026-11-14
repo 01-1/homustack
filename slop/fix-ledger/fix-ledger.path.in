@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the fix ledger check when @REPO@'s ledger or TODO files change
+
+[Path]
+@PATHS@
+Unit=@NAME@.service
+
+[Install]
+WantedBy=default.target

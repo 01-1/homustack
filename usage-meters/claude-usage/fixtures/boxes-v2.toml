@@ -1,0 +1,51 @@
+# Test fixture: made-up accounts, weights, reset counts and dates.
+version = 2
+approved = false
+
+[rate_points_per_million]
+fable = 0.7692307692
+non-fable = 0.1333333333
+codex = 0.2222222222
+
+[[sources]]
+provider = "claude"
+email = "account-b@example.com"
+weight = 1
+fable_banked = 3
+
+[[sources]]
+provider = "claude"
+email = "account-a@example.com"
+weight = 0.1
+weekly_per_5h = 16
+fable_banked = 0
+
+[[sources]]
+provider = "codex"
+email = "account-c@example.com"
+weight = 1
+banked = 2
+
+[[sources]]
+provider = "codex"
+email = "account-d@example.com"
+weight = 0.14285714285714285
+weekly_per_5h = 16
+banked = 0
+
+[[runs]]
+name = "Measured mock"
+start = "2025-11-11T15:00:00-05:00"
+end = "2025-11-11T18:15:00-05:00"
+approved = false
+[runs.allow]
+fable = 20
+non-fable = 10
+codex = 30
+
+[[runs]]
+name = "Final run"
+start = "2025-11-13T18:00:00-05:00"
+end = "2025-11-13T21:15:00-05:00"
+approved = false
+remaining = true

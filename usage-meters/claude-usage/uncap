@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Release all usage guards from a human terminal; agents never run this."""
+import importlib.machinery
+import importlib.util
+import math
+from contextlib import redirect_stdout
+from datetime import datetime
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+
+
+def main(argv=None, stdin=None, stdout=None):
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    if not stdin.isatty() or not stdout.isatty():
+        print('uncap: refused; run it directly in an interactive terminal.', file=stdout)
+        return 2
+    arguments = sys.argv[1:] if argv is None else argv
+    minutes = None
+    if arguments:
+        try:
+            if len(arguments) != 1:
+                raise ValueError()
+            minutes = float(arguments[0])
+            if not math.isfinite(minutes) or minutes <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            print('usage: uncap [positive number of minutes]', file=stdout)
+            return 2
+    try:
+        loader = importlib.machinery.SourceFileLoader('usage_uncap_host', str(Path(__file__).with_name('claude-usage')))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        host = importlib.util.module_from_spec(spec)
+        loader.exec_module(host)
+        import claude_usage_boxes
+        operational_host = SimpleNamespace(**vars(host))
+        if minutes is None:
+            result = claude_usage_boxes.hard_uncap_all(operational_host, stdin, stdout)
+            import outside_api_budget
+            return max(result, outside_api_budget.release_all(None, stdin, stdout))
+        policy = claude_usage_boxes.load(host.BOXES)
+        now = datetime.now().timestamp()
+        result = 0
+        for category in claude_usage_boxes.CATEGORIES:
+            try:
+                with redirect_stdout(stdout):
+                    code = claude_usage_boxes.soft_uncap(operational_host, policy, category, minutes,
+                                                         confirmer=lambda: True, now=now, only_if_capped=True)
+                result = max(result, code)
+            except (OSError, ValueError, KeyError, TypeError):
+                print(claude_usage_boxes.LABELS[category] + ': credit could not be applied; check the local usage guard.', file=stdout)
+                result = max(result, 1)
+        import outside_api_budget
+        return max(result, outside_api_budget.release_all(minutes, stdin, stdout, only_if_blocked=True))
+    except (OSError, ValueError, KeyError, TypeError):
+        print('uncap: release could not finish; check the local usage guard.', file=stdout)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

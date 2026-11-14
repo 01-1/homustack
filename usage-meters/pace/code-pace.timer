@@ -1,0 +1,10 @@
+[Unit]
+Description=MAIN T3 assistance eligibility every minute
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+Unit=code-pace.service
+
+[Install]
+WantedBy=timers.target

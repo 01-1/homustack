@@ -1,0 +1,3 @@
+- [Code blocks only for code](code-blocks-only-for-code.md) — text the user reads is plain text; paths as clickable links
+- [Never test real commands](never-test-real-commands.md) — check guards via dry-run or the guard function only, never run a real stop to "test" it
+- [Ambiguous short message: no action](ambiguous-short-message-no-action.md) — two readings + changes something running: state both, wait; after "stop" nothing restarts without "go"

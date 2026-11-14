@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""Emergency stop for AI agents on a Linux desktop: matching processes and systemd user units.
+
+Default is a dry run. --yes stops for real. --open is the recovery agent's stop (see
+[ka_open]). --verify only checks that nothing selected is left. Targets come from a TOML
+config; see config.example.toml and README.md."""
+import argparse
+from dataclasses import dataclass, replace
+import fnmatch
+import os
+from pathlib import Path
+import pwd
+import re
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+
+# From the password database, not $HOME or $XDG_CONFIG_HOME: the caller's environment never
+# picks the config (and so never the [ka_open] recovery name or gate). ka, ka open and
+# install.sh all use this one path.
+HOME_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir)
+DEFAULT_CONFIG = HOME_DIR / '.config/agents-killall/config.toml'
+OPEN_CONFIG = DEFAULT_CONFIG  # --open refuses --config
+GATE_ENV = {'PATH': '/usr/bin:/bin', 'HOME': str(HOME_DIR), 'LANG': 'C.UTF-8'}
+UNIT_NAME = re.compile(r'[A-Za-z0-9_.@:\\-]+\.(?:service|timer|scope|path|socket)')
+INTERPRETERS = re.compile(r'(?:node(?:js)?(?:-?[0-9]+)?|bash|sh|dash|zsh|python(?:[0-9]+(?:\.[0-9]+)*)?)')
+PRESERVE = '(preserved)'
+
+
+@dataclass(frozen=True)
+class Process:
+    pid: int
+    ppid: int
+    start: str
+    comm: str
+    exe: str
+    argv: tuple
+    state: str = 'S'
+    cgroup: str = ''
+
+
+@dataclass(frozen=True)
+class Group:
+    name: str
+    names: frozenset = frozenset()
+    only_in_cgroups: tuple = ()
+    cgroups: tuple = ()
+    child_names: frozenset = frozenset()
+    parents: tuple = ()
+    units: tuple = ()
+    unit_action: str = 'disable'
+    optional: bool = False
+
+
+@dataclass(frozen=True)
+class KaOpen:
+    recovery_name: str = None
+    gate: tuple = ()
+    keep: tuple = ()
+
+
+@dataclass(frozen=True)
+class Config:
+    groups: tuple
+    preserve: frozenset = frozenset()
+    first_units: tuple = ()
+    grace_seconds: float = 5.0
+    ka_open: KaOpen = None
+    spare: str = None  # --open: the recovery agent's name; it and its descendants are kept
+
+
+# ---------------------------------------------------------------- configuration
+
+GROUP_KEYS = {'name', 'names', 'only_in_cgroups', 'cgroups', 'child_names', 'parents',
+              'units', 'unit_action', 'optional'}
+
+
+def _strings(value, where, min_len=1):
+    # A string where a list belongs is an error, never a list of one-letter names.
+    if not isinstance(value, list) or not all(isinstance(x, str) and len(x.strip()) >= min_len for x in value):
+        raise ValueError(f'{where} must be a list of strings of at least {min_len} character(s)')
+    return value
+
+
+def _unit_patterns(value, where):
+    """A pattern needs a literal prefix of 3+ characters and a literal unit type (or `.*`):
+    `*.service`, `*service` or `app-*` would match units of every kind and owner."""
+    for pattern in _strings(value, where):
+        prefix = re.match(r'[^*?\[]*', pattern).group()
+        if len(prefix) < 3 or not re.search(r'\.(?:service|timer|scope|path|socket|\*)$', pattern):
+            raise ValueError(f'{where}: pattern too broad (needs a 3+ character literal prefix '
+                             f'and a .TYPE or .* suffix): {pattern}')
+    return value
+
+
+def _expand(arg):
+    return str(HOME_DIR) + arg[1:] if arg == '~' or arg.startswith('~/') else arg
+
+
+def _ka_open(raw, groups):
+    if not isinstance(raw, dict) or set(raw) - {'recovery_name', 'gate', 'keep'}:
+        raise ValueError('[ka_open] takes only recovery_name, gate and keep')
+    name = raw.get('recovery_name')
+    if name is not None and (not isinstance(name, str) or not name.strip() or name.startswith('-')
+                             or any(c in name for c in '\n\0')):
+        raise ValueError('ka_open.recovery_name must be a non-empty name not starting with -')
+    gate = tuple(_expand(a) for a in _strings(raw.get('gate', []), 'ka_open.gate'))
+    if gate and not gate[0].startswith('/'):
+        raise ValueError('ka_open.gate: the command must be an absolute path (or start with ~/)')
+    keep = tuple(_strings(raw.get('keep', []), 'ka_open.keep'))
+    unknown = set(keep) - {g.name for g in groups}
+    if unknown:
+        raise ValueError('ka_open.keep: unknown groups: ' + ', '.join(sorted(unknown)))
+    if name is None and not gate:
+        raise ValueError('[ka_open] needs recovery_name or gate')
+    return KaOpen(name, gate, keep)
+
+
+def _regexes(value, where):
+    try:
+        return tuple(re.compile(x, re.M) for x in _strings(value, where))
+    except re.error as exc:
+        raise ValueError(f'{where}: invalid regex ({exc})') from None
+
+
+def parse_config(data):
+    unknown = set(data) - {'group', 'preserve', 'first_units', 'grace_seconds', 'ka_open'}
+    if unknown:
+        raise ValueError('unknown top-level keys: ' + ', '.join(sorted(unknown)))
+    groups = []
+    for i, raw in enumerate(data.get('group', [])):
+        where = f'group #{i + 1}'
+        if not isinstance(raw, dict):
+            raise ValueError(f'{where} must be a table')
+        unknown = set(raw) - GROUP_KEYS
+        if unknown:
+            raise ValueError(f'{where}: unknown keys: ' + ', '.join(sorted(unknown)))
+        name = raw.get('name')
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name):
+            raise ValueError(f'{where}: name must be lowercase letters, digits, - or _')
+        action = raw.get('unit_action', 'disable')
+        if action not in {'disable', 'stop'}:
+            raise ValueError(f'{where}: unit_action must be "disable" or "stop"')
+        if not isinstance(raw.get('optional', False), bool):
+            raise ValueError(f'{where}: optional must be true or false')
+        group = Group(
+            name=name,
+            names=frozenset(_strings(raw.get('names', []), where + '.names', 3)),
+            only_in_cgroups=_regexes(raw.get('only_in_cgroups', []), where + '.only_in_cgroups'),
+            cgroups=_regexes(raw.get('cgroups', []), where + '.cgroups'),
+            child_names=frozenset(_strings(raw.get('child_names', []), where + '.child_names', 3)),
+            parents=tuple(_strings(raw.get('parents', []), where + '.parents')),
+            units=tuple(_unit_patterns(raw.get('units', []), where + '.units')),
+            unit_action=action,
+            optional=raw.get('optional', False))
+        if not (group.names or group.cgroups or group.child_names or group.units):
+            raise ValueError(f'{where}: selects nothing (set names, cgroups, child_names or units)')
+        if bool(group.child_names) != bool(group.parents):
+            raise ValueError(f'{where}: child_names and parents go together')
+        groups.append(group)
+    if not groups:
+        raise ValueError('config has no [[group]] entries')
+    names = [g.name for g in groups]
+    if len(set(names)) != len(names):
+        raise ValueError('group names must be unique')
+    for g in groups:
+        missing = set(g.parents) - set(names)
+        if missing:
+            raise ValueError(f'group {g.name}: unknown parents: ' + ', '.join(sorted(missing)))
+    preserve = data.get('preserve', {})
+    if not isinstance(preserve, dict) or set(preserve) - {'names'}:
+        raise ValueError('[preserve] takes only names')
+    grace = data.get('grace_seconds', 5)
+    if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not 0 < grace <= 120:
+        raise ValueError('grace_seconds must be a number in (0, 120]')
+    first = _strings(data.get('first_units', []), 'first_units')
+    for unit in first:
+        if not UNIT_NAME.fullmatch(unit):
+            raise ValueError(f'first_units: not a unit name: {unit}')
+    ka_open = _ka_open(data['ka_open'], groups) if 'ka_open' in data else None
+    return Config(tuple(groups), frozenset(_strings(preserve.get('names', []), 'preserve.names')),
+                  tuple(first), float(grace), ka_open)
+
+
+def load_config(path):
+    with open(path, 'rb') as f:
+        return parse_config(tomllib.load(f))
+
+
+def active_groups(cfg, include=(), keep=()):
+    known = {g.name for g in cfg.groups}
+    unknown = (set(include) | set(keep)) - known
+    if unknown:
+        raise ValueError('unknown group(s): ' + ', '.join(sorted(unknown)))
+    return {g.name for g in cfg.groups if (not g.optional or g.name in include) and g.name not in keep}
+
+
+# ---------------------------------------------------------------- processes
+
+def read_process(pid, root=Path('/proc'), uid=None):
+    """One of this user's processes, or None. Uses the status UIDs, not the /proc owner,
+    so a same-user process that made itself non-dumpable is still seen. Processes with
+    any other real/effective/saved UID (setuid helpers, other users) are never targets."""
+    d = root / str(pid)
+    uid = os.getuid() if uid is None else uid
+    status = (d / 'status').read_text()
+    uids = next((line.split()[1:4] for line in status.splitlines() if line.startswith('Uid:')), [])
+    if len(uids) != 3 or any(int(u) != uid for u in uids):
+        return None
+    raw = (d / 'stat').read_text()
+    fields = raw[raw.rfind(')') + 2:].split()  # comm may contain spaces or parentheses
+    argv = tuple(x.decode(errors='replace') for x in (d / 'cmdline').read_bytes().split(b'\0') if x)
+    try:
+        exe = os.readlink(d / 'exe')
+    except OSError:  # exited, kernel thread, or non-dumpable
+        exe = ''
+    try:
+        cgroup = (d / 'cgroup').read_text()
+    except OSError:
+        cgroup = ''
+    return Process(int(pid), int(fields[1]), fields[19], (d / 'comm').read_text().strip(),
+                   exe, argv, fields[0], cgroup)
+
+
+def processes(root=Path('/proc')):
+    found = {}
+    for d in root.iterdir():
+        if d.name.isdigit():
+            try:
+                p = read_process(int(d.name), root)
+            except (OSError, ValueError, IndexError):
+                continue
+            if p and p.state != 'Z':
+                found[p.pid] = p
+    return found
+
+
+def names_of(p):
+    """Executable/script basenames only: never prompt text or other arguments."""
+    names = {Path(p.exe).name.lower(), p.comm.lower()}
+    if p.argv:
+        names.add(Path(p.argv[0]).name.lower())
+    executable = Path(p.exe).name.lower() or (Path(p.argv[0]).name.lower() if p.argv else '')
+    if INTERPRETERS.fullmatch(executable) and len(p.argv) > 1 and not p.argv[1].startswith('-'):
+        names.add(Path(p.argv[1]).name.lower())
+    names.discard('')
+    return names
+
+
+def classify(p, cfg):
+    """The first group (config order) a process belongs to, PRESERVE, or None."""
+    names = names_of(p)
+    if names & {n.lower() for n in cfg.preserve} or (cfg.spare and is_recovery(p, cfg.spare)):
+        return PRESERVE
+    for g in cfg.groups:
+        if names & {n.lower() for n in g.names} and (
+                not g.only_in_cgroups or any(r.search(p.cgroup) for r in g.only_in_cgroups)):
+            return g.name
+        if any(r.search(p.cgroup) for r in g.cgroups):
+            return g.name
+    return None
+
+
+def targets(procs, cfg, active):
+    roles = {pid: classify(p, cfg) for pid, p in procs.items()}
+    selected = {pid: role for pid, role in roles.items() if role in active}
+    # e.g. an agent CLI an app started directly, even when the app itself is kept.
+    for pid, p in procs.items():
+        if pid in selected or roles[pid] == PRESERVE:
+            continue
+        for g in cfg.groups:
+            if g.name in active and roles.get(p.ppid) in g.parents and names_of(p) & {n.lower() for n in g.child_names}:
+                selected[pid] = g.name
+                break
+    # Descendants of targets go too, except preserved, kept or not-included processes.
+    changed = True
+    while changed:
+        changed = False
+        for pid, p in procs.items():
+            if pid not in selected and p.ppid in selected and (roles[pid] is None or roles[pid] in active):
+                selected[pid] = roles[pid] or 'child'
+                changed = True
+    selected.pop(os.getpid(), None)
+    if cfg.spare:
+        # --open: the recovery agent and everything beneath it stay, even processes
+        # (an agent CLI it started) that a group would select by name or cgroup.
+        for pid in [pid for pid in selected if any(is_recovery(procs[q], cfg.spare)
+                                                   for q in ancestors(procs, pid))]:
+            del selected[pid]
+    return selected
+
+
+def ancestors(procs, pid):
+    seen = set()
+    while pid in procs and pid not in seen:
+        seen.add(pid)
+        pid = procs[pid].ppid
+    return seen
+
+
+def is_recovery(p, name):
+    """The recovery agent: a process started with `--name NAME` (or `--name=NAME`)."""
+    a = p.argv
+    return f'--name={name}' in a or any(a[i] == '--name' and a[i + 1] == name for i in range(len(a) - 1))
+
+
+def beneath_recovery(procs, pid, name):
+    return any(is_recovery(procs[q], name) for q in ancestors(procs, pid) - {pid})
+
+
+def open_gate_passes(gate):
+    """The configured gate decides whether `ka open` may run; it must exit 0. It runs with
+    a fixed minimal environment, never the caller's."""
+    try:
+        return subprocess.run(list(gate), stdin=subprocess.DEVNULL, timeout=60, check=False,
+                              env=GATE_ENV, cwd=str(HOME_DIR)).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def cgroup_units(cgroup):
+    """Every slice/scope/service name on a cgroup path."""
+    return {part for line in cgroup.splitlines() for part in line.split(':', 2)[-1].split('/') if part}
+
+
+def table(label, procs, selected):
+    print(label + ': PID PPID ROLE STATE', flush=True)
+    for pid in sorted(selected):
+        p = procs[pid]
+        # No command lines or environment: they can hold prompts and credentials.
+        print(f'  {pid} {p.ppid} {selected[pid]} {p.state}')
+    if not selected:
+        print('  (none)')
+
+
+def signal_process(p, sig):
+    """Signal only the exact process we saw: pin it with a pidfd, then recheck its start time."""
+    # A process that is gone, or one we may not signal, never aborts the stop: verify then
+    # reports it as remaining.
+    try:
+        fd = os.pidfd_open(p.pid)
+    except OSError:
+        return
+    try:
+        current = read_process(p.pid)
+        if current and current.start == p.start:
+            signal.pidfd_send_signal(fd, sig)
+    except (OSError, ValueError, IndexError):
+        pass
+    finally:
+        os.close(fd)
+
+
+def stop_processes(cfg, active, initial):
+    tracked = {pid: initial[pid] for pid in targets(initial, cfg, active)}
+    for p in tracked.values():
+        signal_process(p, signal.SIGTERM)
+    remaining = list(tracked.values())
+    deadline = time.monotonic() + cfg.grace_seconds
+    while time.monotonic() < deadline:
+        current = processes()
+        # New children, and targets that appeared since the first snapshot.
+        for pid in targets(current, cfg, active):
+            if pid not in tracked:
+                tracked[pid] = current[pid]
+                signal_process(current[pid], signal.SIGTERM)
+        # Orphans are remembered by PID and start time even after their parent exits.
+        remaining = [p for pid, p in tracked.items() if pid in current and current[pid].start == p.start]
+        if not remaining:
+            return
+        time.sleep(.2)
+    for p in remaining:
+        signal_process(p, signal.SIGKILL)
+    time.sleep(.3)
+
+
+# ---------------------------------------------------------------- systemd user units
+
+def run(command, timeout=25):
+    try:
+        r = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f'{Path(command[0]).name} failed ({type(exc).__name__})') from None
+    if r.returncode:
+        raise RuntimeError(f'{Path(command[0]).name} exited {r.returncode}')  # stderr not relayed
+    return r.stdout
+
+
+def list_units():
+    found = set()
+    for verb in ('list-unit-files', 'list-units'):
+        args = ['systemctl', '--user', verb, '--no-pager', '--no-legend', '--plain']
+        if verb == 'list-units':
+            args.append('--all')
+        for line in run(args).splitlines():
+            words = line.split()
+            if words and UNIT_NAME.fullmatch(words[0]):
+                found.add(words[0])
+    return found
+
+
+def unit_plan(found, cfg, active):
+    """{unit: action} in stop order: first_units, then timers/paths/sockets, services, scopes."""
+    def matches(g, unit):
+        return any(fnmatch.fnmatchcase(unit, pattern) for pattern in g.units)
+    kept = {u for u in found for g in cfg.groups if g.name not in active and matches(g, u)}
+    plan = {}
+    for g in cfg.groups:
+        if g.name in active:
+            for unit in found:
+                if unit not in kept and matches(g, unit):
+                    plan.setdefault(unit, 'stop' if unit.endswith('.scope') else g.unit_action)
+    rank = {'.timer': 0, '.path': 0, '.socket': 0, '.service': 1, '.scope': 2}
+    # Scopes are transient: `disable` fails on them, so they are only ever stopped.
+    ordered = {u: 'stop' if u.endswith('.scope') else 'disable' for u in cfg.first_units if u in found}
+    for unit in sorted(set(plan) - set(ordered), key=lambda u: (rank[u[u.rfind('.'):]], u)):
+        ordered[unit] = plan[unit]
+    return ordered
+
+
+def show(unit):
+    out = run(['systemctl', '--user', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'UnitFileState'])
+    return dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
+
+
+def settled(values, action):
+    if values.get('LoadState') == 'not-found':
+        return True
+    stopped = values.get('ActiveState') in {'inactive', 'failed'}
+    return stopped and (action != 'disable' or values.get('UnitFileState') not in {'enabled', 'enabled-runtime'})
+
+
+def stop_unit(unit, action):
+    command = ['systemctl', '--user', 'disable', '--now', unit] if action == 'disable' else \
+              ['systemctl', '--user', 'stop', unit]
+    try:
+        run(command)
+    except RuntimeError:
+        # Transient scopes vanish when emptied; a missing unit is already stopped.
+        if not settled(show(unit), action):
+            raise
+
+
+# ---------------------------------------------------------------- modes
+
+def verify(cfg, active):
+    errors = []
+    procs = processes()
+    selected = targets(procs, cfg, active)
+    table('AFTER', procs, selected)
+    if selected:
+        errors.append(f'{len(selected)} selected processes remain')
+    try:
+        for unit, action in unit_plan(list_units(), cfg, active).items():
+            if not settled(show(unit), action):
+                errors.append(f'unit still active or enabled: {unit}')
+    except RuntimeError as exc:
+        errors.append(f'unit inspection failed: {exc}')
+    print('VERIFY ' + ('FAIL: ' + '; '.join(errors) if errors else 'PASS'))
+    return errors
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__)
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true', help='inspect only (default)')
+    mode.add_argument('--yes', action='store_true', help='STOP for real; run from a separate terminal')
+    mode.add_argument('--open', action='store_true',
+                      help='the recovery agent\'s stop (`ka open`): --yes, keeping [ka_open] keep groups')
+    mode.add_argument('--verify', action='store_true', help='check that nothing selected remains')
+    mode.add_argument('--check-config', action='store_true', help='validate the config only')
+    p.add_argument('--config', type=Path, help=f'TOML config (default {DEFAULT_CONFIG}; not with --open)')
+    p.add_argument('--include', action='append', default=[], metavar='GROUP', help='also stop an optional group')
+    p.add_argument('--keep', action='append', default=[], metavar='GROUP', help='leave a group running')
+    return p
+
+
+def refuse(message, hint=' Run it from a separate desktop terminal.'):
+    print('Refusing the stop: ' + message + hint, file=sys.stderr)
+    return 2
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    if os.geteuid() == 0:
+        print('Refusing root: run as the desktop user whose agents should stop.', file=sys.stderr)
+        return 2
+    if args.open and args.config is not None:
+        return refuse(f'--open always uses {OPEN_CONFIG}; --config is not allowed.', '')
+    path = OPEN_CONFIG if args.open else args.config or DEFAULT_CONFIG
+    try:
+        cfg = load_config(path)
+        if args.open and cfg.ka_open is None:
+            raise ValueError('no [ka_open] table, so ka open is not configured')
+        active = active_groups(cfg, args.include, args.keep + list(cfg.ka_open.keep if args.open else ()))
+        if args.open:
+            # The recovery agent running ka open is never stopped by it, whatever its name.
+            cfg = replace(cfg, spare=cfg.ka_open.recovery_name)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        print(f'config error ({path}): {exc}', file=sys.stderr)
+        return 2
+    if args.check_config:
+        print(f'CONFIG OK ({path}): groups ' + ', '.join(g.name for g in cfg.groups))
+        return 0
+    if args.verify:
+        return int(bool(verify(cfg, active)))
+    real = args.yes or args.open
+    procs = processes()
+    selected = targets(procs, cfg, active)
+    inventory_problem = None
+    try:
+        found = list_units()
+    except RuntimeError as exc:
+        # A real stop still signals processes when systemd can't list its units;
+        # it still tries the first_units, since their absence can't be confirmed.
+        if not real:
+            raise
+        found, inventory_problem = set(cfg.first_units), f'unit inventory: {exc}'
+    plan = unit_plan(found, cfg, active)
+    table('BEFORE', procs, selected)
+    print('GROUPS: ' + ', '.join(g.name for g in cfg.groups if g.name in active))
+    print('UNITS: ' + ('UNKNOWN (unit listing failed); ' if inventory_problem else '') +
+          (', '.join(f'{u} ({a})' for u, a in plan.items()) or '(none)'))
+    if not real:
+        print('DRY RUN: nothing was signalled, stopped or disabled.')
+        return 0
+    recovery = cfg.ka_open.recovery_name if cfg.ka_open else None
+    if args.open:
+        gate = cfg.ka_open.gate
+        if gate and not open_gate_passes(gate):
+            return refuse('the configured ka_open gate did not pass.', '')
+        if not gate and not beneath_recovery(procs, os.getpid(), recovery):
+            return refuse(f'ka open is only for the recovery agent ({recovery}). Humans use ka.', '')
+    elif recovery and beneath_recovery(procs, os.getpid(), recovery):
+        # An accident guard, not a security boundary: any process can carry that --name.
+        return refuse('the recovery agent may only run ka open (agents-killall --open).', '')
+    # Stopping our own caller, scope or unit would kill this run halfway through.
+    me = procs.get(os.getpid())
+    if (ancestors(procs, os.getpid()) - {os.getpid()}) & set(selected):
+        return refuse('it runs beneath a process it would stop.')
+    if me is None:
+        return refuse('cannot read its own process entry.')
+    if any(r.search(me.cgroup) for g in cfg.groups if g.name in active for r in g.cgroups):
+        return refuse('it runs inside a cgroup whose processes it would stop.')
+    if cgroup_units(me.cgroup) & set(plan):
+        return refuse('it runs inside a unit it would stop.')
+    problems = []
+    if inventory_problem:
+        problems.append(inventory_problem)
+        print(f'STEP FAILED (continuing): {inventory_problem}', file=sys.stderr)
+    for unit, action in plan.items():
+        try:
+            stop_unit(unit, action)
+        except RuntimeError as exc:
+            # Never give up before signalling processes: report, continue, fail at the end.
+            problems.append(f'{unit}: {exc}')
+            print(f'STEP FAILED (continuing): {unit}: {exc}', file=sys.stderr)
+    stop_processes(cfg, active, processes())
+    errors = problems + verify(cfg, active)
+    return int(bool(errors))
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (RuntimeError, OSError) as exc:
+        print(f'ERROR: {type(exc).__name__}: {exc if isinstance(exc, RuntimeError) else "operation failed"}', file=sys.stderr)
+        sys.exit(2)

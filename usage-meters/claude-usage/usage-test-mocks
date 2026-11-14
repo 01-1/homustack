@@ -1,0 +1,3 @@
+#!/usr/bin/python3 -B
+from test_mock_usage import main
+raise SystemExit(main())

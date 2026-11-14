@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+from outside_api_budget import main
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except Exception:
+        print('{"allowed":false,"error":"outside-API guard unavailable; no live call allowed"}')
+        raise SystemExit(1)

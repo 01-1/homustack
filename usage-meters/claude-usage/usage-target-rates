@@ -1,0 +1,3 @@
+#!/usr/bin/python3 -B
+from usage_target_rates import main
+raise SystemExit(main())

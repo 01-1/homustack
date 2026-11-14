@@ -1,0 +1,9 @@
+[Unit]
+Description=Guarded MAIN T3 making-faster helper scan
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B %h/.local/lib/code-pace/pace.py --apply
+TimeoutStartSec=65
+UMask=0077
+NoNewPrivileges=yes

@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "note": "EXAMPLE ONLY, with made-up numbers. The real file is fitted from your own proxy meter readings and local Claude/Codex session logs (see reproduction). Only account-a@example.com's weekly_fable meter is marked usable (the tests expect one usable Fable meter); it matches no real account, so the token estimate gives no figure for your records until you fit your own.",
+  "units": "percentage points of each source meter; pooled category values use boxes.toml weights",
+  "token_semantics": {
+    "input": "uncached input; subtract cached_input_tokens from raw Codex input_tokens once",
+    "output": "includes reasoning; never add reasoning_output_tokens again",
+    "cache_write": "total cache creation includes 1h subset",
+    "cache_read": "disjoint cached input",
+    "cache_write_1h": "optional subset of cache_write; 2x input prior instead of 1.25x"
+  },
+  "method": {
+    "fit": "nonnegative least squares on non-overlapping approximately 40-minute meter differences",
+    "reset_handling": "drop any provider-meter decrease or reset-epoch change greater than 120s; never count reset drop as negative consumption",
+    "excluded_intervals": "gaps >30m, resets, provider meters outside [0,100], or >5% unattributed API-style token signal"
+  },
+  "priors": {
+    "relative_token_weights": {
+      "input": 1,
+      "output": 5,
+      "claude_cache_write_5m": 1.25,
+      "claude_cache_write_1h": 2,
+      "cache_read": 0.1
+    }
+  },
+  "model_families": {
+    "claude-opus-5-5": "claude-non-fable",
+    "claude-sonnet-5-5": "claude-non-fable",
+    "claude-fable-5-2": "claude-fable",
+    "claude-haiku-5-5": "claude-non-fable",
+    "claude-fable-5-1": "claude-fable",
+    "gpt-6.1-sol": "gpt-6.1-sol",
+    "gpt-6-luna": "gpt-6-luna",
+    "gpt-6.1-terra": "gpt-6.1-terra"
+  },
+  "accounts": {
+    "account-a@example.com": {
+      "provider": "claude",
+      "meters": {
+        "weekly_fable": {
+          "usable": true,
+          "usable_scope": "example: secondary estimate only",
+          "points_per_million_tokens": {
+            "claude-fable": {
+              "input": 0.8,
+              "output": 4.0,
+              "cache_write": 1.0,
+              "cache_read": 0.08000000000000002,
+              "cache_write_1h": 1.6
+            }
+          },
+          "validation": {
+            "actual_points": 10.0,
+            "predicted_points": 9.6,
+            "error_points": -0.4
+          }
+        },
+        "weekly_non_fable": {
+          "usable": false,
+          "usable_scope": "example only; fit your own",
+          "points_per_million_tokens": {
+            "claude-non-fable": {
+              "input": 0.19,
+              "output": 0.95,
+              "cache_write": 0.2375,
+              "cache_read": 0.019000000000000003,
+              "cache_write_1h": 0.38
+            }
+          },
+          "validation": {
+            "actual_points": null,
+            "predicted_points": null,
+            "error_points": null
+          }
+        }
+      }
+    },
+    "account-c@example.com": {
+      "provider": "codex",
+      "meters": {
+        "weekly_all": {
+          "usable": false,
+          "usable_scope": "example only; fit your own",
+          "points_per_million_tokens": {
+            "gpt-6.1-sol": {
+              "input": 0.23,
+              "output": 1.1500000000000001,
+              "cache_write": 0.28750000000000003,
+              "cache_read": 0.023000000000000003,
+              "cache_write_1h": 0.46
+            },
+            "gpt-6.1-terra": {
+              "input": 0.21,
+              "output": 1.05,
+              "cache_write": 0.2625,
+              "cache_read": 0.021,
+              "cache_write_1h": 0.42
+            }
+          },
+          "validation": {
+            "actual_points": null,
+            "predicted_points": null,
+            "error_points": null
+          }
+        }
+      }
+    }
+  },
+  "reproduction": [
+    "Read original Claude assistant usage; globally deduplicate message.id and take per-field maximum across streamed records.",
+    "Read Codex cumulative total_token_usage within each session: take positive differences; for first/reset record use last_token_usage; ignore unchanged totals.",
+    "Subtract cached_input_tokens from Codex inclusive input; output already includes reasoning.",
+    "Match model/time against proxy account selections without assuming priority order. Keep overlapping accounts unassigned.",
+    "For each meter, retain all readings and first-seen old/new steps. Reject reset/gap/out-of-range intervals and >5% unknown signal.",
+    "Sum tokens and signed meter changes in adjacent nonoverlapping >=40m blocks, preserving partial blocks at gaps.",
+    "Transform token types with fixed existing API-style ratios. Fit nonnegative family slopes with coordinate descent.",
+    "Train only on intervals ending before a cutoff; test only on intervals starting after it. No crossing interval used in validation.",
+    "Refit accepted/candidate slopes on all eligible blocks. Codex uses ridge lambda 10 toward training pooled slope; unsupported Luna slope stays unpublished.",
+    "Category estimates use weekly Fable, derived own-half 2A-F non-Fable, and weekly Codex. Five-hour meters constrain the same usage and are never added."
+  ]
+}

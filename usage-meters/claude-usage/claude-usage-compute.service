@@ -1,0 +1,8 @@
+[Unit]
+Description=Read non-LLM cloud costs and deliver cumulative spend reminders
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-usage --compute-check
+TimeoutStartSec=4min
+UMask=0077

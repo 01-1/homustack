@@ -1,0 +1,5 @@
+#!/usr/bin/python3 -B
+import sys
+sys.dont_write_bytecode = True
+from usage_helper_admission import main
+raise SystemExit(main())

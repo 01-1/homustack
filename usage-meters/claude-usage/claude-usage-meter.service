@@ -1,0 +1,7 @@
+[Unit]
+Description=Enforce usage boxes from local cached meters (no provider polling)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-usage --meter-check
+UMask=0077

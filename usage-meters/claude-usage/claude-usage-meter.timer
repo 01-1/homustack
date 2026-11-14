@@ -1,0 +1,10 @@
+[Unit]
+Description=Read cached local usage meters every 60 seconds; keep TSV every 10 minutes
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Run check.py --fix on a repository and hand unresolved cases to a notifier.
+
+    fix-ledger-run REPO [--state DIR] [--dry-run]
+
+Unresolved cases (UNFIXED lines) are deduplicated, saved to a durable outbox
+BEFORE delivery, and removed only after the notifier exits 0, so a transient
+problem that was repaired meanwhile still gets reported. The notifier comes from
+"notify" in REPO/.fix-ledger.json: {"argv": [...]} gets the message on stdin
+(or as {text} in argv). With no notifier the message is only printed (journal).
+--dry-run checks without --fix and prints what would be handed off; it writes
+nothing and sends nothing.
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from check import default_state  # noqa: E402
+
+INTRO = ('Automatic request repair needs follow-through. Check the actual state first; repair it or '
+         'assign the owner, and establish the trigger and effect if completion is unproved.\n')
+
+
+def save(path, data):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(data, indent=2) + '\n')
+    temporary.replace(path)
+
+
+def notifier(repo):
+    cfg = Path(repo) / '.fix-ledger.json'
+    spec = (json.loads(cfg.read_text()) if cfg.exists() else {}).get('notify')
+
+    def deliver(message):
+        if not spec:
+            print('HANDOFF (no notifier configured):\n' + message, flush=True)
+            return True
+        argv = [a.replace('{text}', message) for a in spec['argv']]
+        stdin = None if any('{text}' in a for a in spec['argv']) else message
+        r = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=60)
+        return r.returncode == 0
+    return deliver
+
+
+def unresolved(output, rc):
+    problems = sorted(set(line for line in output.splitlines() if line.startswith('UNFIXED')))
+    return '\n'.join(problems) or output.strip() or f'checker exited {rc}'
+
+
+def run(repo, state=None, deliver=None, checker=None, dry_run=False):
+    repo = Path(repo).resolve()
+    state = Path(state or default_state(repo))
+    cmd = [sys.executable, '-I', str(HERE / 'check.py'), str(repo), '--state', str(state)]
+    if dry_run:
+        try:
+            result = (checker or subprocess.run)(cmd, capture_output=True, text=True, timeout=90, check=False)
+            output, rc = result.stdout + result.stderr, result.returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            output, rc = f'checker failed: {type(exc).__name__}', 1
+        print(output.rstrip() or f'checker exited {rc}', flush=True)
+        if rc:
+            print('WOULD HAND OFF:\n' + INTRO + unresolved(output, rc))
+        return 0
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    deliver = deliver or notifier(repo)
+    with (state / 'run.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        path = state / 'handoffs.json'
+        outbox = json.loads(path.read_text()) if path.exists() else {'last': None, 'pending': {}}
+        try:
+            result = (checker or subprocess.run)(cmd + ['--fix'], capture_output=True, text=True,
+                                                 timeout=90, check=False)
+            output = result.stdout + result.stderr
+            rc = result.returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            output, rc = f'checker failed: {type(exc).__name__}', 1
+        print(output.rstrip() or f'checker exited {rc}', flush=True)
+        if rc:
+            message = unresolved(output, rc)
+            fingerprint = hashlib.sha256(message.encode()).hexdigest()
+            if fingerprint != outbox['last']:
+                outbox['pending'][fingerprint] = message
+            outbox['last'] = fingerprint
+        else:
+            outbox['last'] = None
+        # Persist BEFORE delivery. Transient repair errors survive a later successful check.
+        save(path, outbox)
+        for fingerprint, message in list(outbox['pending'].items()):
+            try:
+                if deliver(INTRO + message) is not True:
+                    raise RuntimeError('delivery not accepted')
+            except Exception as exc:
+                print(f'Handoff pending: {type(exc).__name__}', flush=True)
+                return 1
+            del outbox['pending'][fingerprint]
+            save(path, outbox)
+            print('Handoff delivered', flush=True)
+        return 0
+
+
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('repo')
+    ap.add_argument('--state', type=Path)
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args()
+    raise SystemExit(run(a.repo, a.state, dry_run=a.dry_run))

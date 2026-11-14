@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "projectId": "<T3 project id>",
+  "environmentId": "<T3 environment id>",
+  "excludedThreadIds": [],
+  "holdFiles": [],
+  "admissionCommand": "~/.local/bin/usage-helper-admission"
+}

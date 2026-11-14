@@ -1,0 +1,584 @@
+{
+ "linear": {
+  "result": [
+   [],
+   []
+  ],
+  "state": {
+   "current": [],
+   "levels": {
+    "codex:15:notify:1.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:15:notify:1.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:15:notify:1.875": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:30:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:30:notify:1.35": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:30:notify:1.45": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:5:notify:2.0": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:5:notify:2.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:5:notify:2.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:60:notify:1.1": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:60:notify:1.2": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:60:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:15:notify:1.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:15:notify:1.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:15:notify:1.875": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:notify:1.35": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:notify:1.45": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:notify:2.0": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:notify:2.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:notify:2.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:notify:1.1": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:notify:1.2": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:notify:1.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:notify:1.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:notify:1.875": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:notify:1.35": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:notify:1.45": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:notify:2.0": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:notify:2.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:notify:2.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:notify:1.1": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:notify:1.2": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    }
+   },
+   "stops": {
+    "codex:15:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:30:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:5:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "codex:60:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:15:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    }
+   },
+   "trip_epochs": {}
+  }
+ },
+ "source": "ladder_evaluate from claude_usage_boxes.py before the target-rate refactor (2025-11-12), run on this test's inputs",
+ "stepped": {
+  "result": [
+   [
+    "Codex 5m 2\u00d7 crossed (100.00\u00d7; 100.00 points / 1.00 planned). Target rate: 1 points; Spend: 100 points; Box: Preparation.",
+    "Codex 5m 2.5\u00d7 crossed (100.00\u00d7; 100.00 points / 1.00 planned). Target rate: 1 points; Spend: 100 points; Box: Preparation.",
+    "Codex 5m 2.75\u00d7 crossed (100.00\u00d7; 100.00 points / 1.00 planned). Target rate: 1 points; Spend: 100 points; Box: Preparation.",
+    "STOP Codex: 5m confirmed 99.00\u00d7 \u2265 3\u00d7 (99.00 points / 3.00 limit); blocked on every account until human UNCAP. Target rate: 1 points; Spend: 99 points; Box: Preparation.",
+    "Codex 15m 1.5\u00d7 crossed (33.33\u00d7; 100.00 points / 3.00 planned). Target rate: 3 points; Spend: 100 points; Box: Preparation.",
+    "Codex 15m 1.75\u00d7 crossed (33.33\u00d7; 100.00 points / 3.00 planned). Target rate: 3 points; Spend: 100 points; Box: Preparation.",
+    "Codex 15m 1.875\u00d7 crossed (33.33\u00d7; 100.00 points / 3.00 planned). Target rate: 3 points; Spend: 100 points; Box: Preparation.",
+    "STOP Codex: 15m confirmed 33.00\u00d7 \u2265 2\u00d7 (99.00 points / 6.00 limit); blocked on every account until human UNCAP. Target rate: 3 points; Spend: 99 points; Box: Preparation.",
+    "Codex 30m 1.25\u00d7 crossed (16.67\u00d7; 100.00 points / 6.00 planned). Target rate: 6 points; Spend: 100 points; Box: Preparation.",
+    "Codex 30m 1.35\u00d7 crossed (16.67\u00d7; 100.00 points / 6.00 planned). Target rate: 6 points; Spend: 100 points; Box: Preparation.",
+    "Codex 30m 1.45\u00d7 crossed (16.67\u00d7; 100.00 points / 6.00 planned). Target rate: 6 points; Spend: 100 points; Box: Preparation.",
+    "STOP Codex: 30m confirmed 16.50\u00d7 \u2265 1.5\u00d7 (99.00 points / 9.00 limit); blocked on every account until human UNCAP. Target rate: 6 points; Spend: 99 points; Box: Preparation.",
+    "Codex 60m 1.1\u00d7 crossed (8.33\u00d7; 100.00 points / 12.00 planned). Target rate: 12 points; Spend: 100 points; Box: Preparation.",
+    "Codex 60m 1.2\u00d7 crossed (8.33\u00d7; 100.00 points / 12.00 planned). Target rate: 12 points; Spend: 100 points; Box: Preparation.",
+    "Codex 60m 1.25\u00d7 crossed (8.33\u00d7; 100.00 points / 12.00 planned). Target rate: 12 points; Spend: 100 points; Box: Preparation.",
+    "STOP Codex: 60m confirmed 8.25\u00d7 \u2265 1.3\u00d7 (99.00 points / 15.60 limit); blocked on every account until human UNCAP. Target rate: 12 points; Spend: 99 points; Box: Preparation."
+   ],
+   [
+    {
+     "allowed": 3.0,
+     "approved": true,
+     "category": "codex",
+     "end": 1762927500.0,
+     "incomplete": false,
+     "name": "Preparation: 5-minute rate",
+     "run": true,
+     "soft_credit": 0.0,
+     "start": 1762926900.0,
+     "used": 99.0
+    },
+    {
+     "allowed": 6.0,
+     "approved": true,
+     "category": "codex",
+     "end": 1762928100.0,
+     "incomplete": false,
+     "name": "Preparation: 15-minute rate",
+     "run": true,
+     "soft_credit": 0.0,
+     "start": 1762926300.0,
+     "used": 99.0
+    },
+    {
+     "allowed": 9.0,
+     "approved": true,
+     "category": "codex",
+     "end": 1762929000.0,
+     "incomplete": false,
+     "name": "Preparation: 30-minute rate",
+     "run": true,
+     "soft_credit": 0.0,
+     "start": 1762925400.0,
+     "used": 99.0
+    },
+    {
+     "allowed": 15.600000000000001,
+     "approved": true,
+     "category": "codex",
+     "end": 1762930800.0,
+     "incomplete": false,
+     "name": "Preparation: 60-minute rate",
+     "run": true,
+     "soft_credit": 0.0,
+     "start": 1762923600.0,
+     "used": 99.0
+    }
+   ]
+  ],
+  "state": {
+   "current": [
+    "Codex 5m 2.75\u00d7 crossed (100.00\u00d7; 100.00 points / 1.00 planned). Target rate: 1 points; Spend: 100 points; Box: Preparation.",
+    "Codex 15m 1.875\u00d7 crossed (33.33\u00d7; 100.00 points / 3.00 planned). Target rate: 3 points; Spend: 100 points; Box: Preparation.",
+    "Codex 30m 1.45\u00d7 crossed (16.67\u00d7; 100.00 points / 6.00 planned). Target rate: 6 points; Spend: 100 points; Box: Preparation.",
+    "Codex 60m 1.25\u00d7 crossed (8.33\u00d7; 100.00 points / 12.00 planned). Target rate: 12 points; Spend: 100 points; Box: Preparation."
+   ],
+   "levels": {
+    "codex:15:notify:1.5": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:15:notify:1.75": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:15:notify:1.875": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:30:notify:1.25": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:30:notify:1.35": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:30:notify:1.45": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:5:notify:2.0": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:5:notify:2.5": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:5:notify:2.75": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:60:notify:1.1": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:60:notify:1.2": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:60:notify:1.25": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "fable:15:notify:1.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:15:notify:1.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:15:notify:1.875": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:notify:1.35": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:notify:1.45": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:notify:2.0": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:notify:2.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:notify:2.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:notify:1.1": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:notify:1.2": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:notify:1.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:notify:1.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:notify:1.875": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:notify:1.35": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:notify:1.45": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:notify:2.0": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:notify:2.5": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:notify:2.75": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:notify:1.1": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:notify:1.2": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:notify:1.25": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    }
+   },
+   "stops": {
+    "codex:15:stop": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:30:stop": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:5:stop": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "codex:60:stop": {
+     "below_since": null,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": true
+    },
+    "fable:15:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:30:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:5:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "fable:60:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:15:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:30:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:5:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    },
+    "non-fable:60:stop": {
+     "below_since": 1762927200.0,
+     "epoch": "1762902900.0:1.0:False",
+     "fired": false
+    }
+   },
+   "trip_epochs": {
+    "codex": "1762902900.0:1.0:False"
+   }
+  }
+ }
+}

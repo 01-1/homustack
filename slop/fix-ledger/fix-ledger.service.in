@@ -1,0 +1,8 @@
+[Unit]
+Description=Repair dropped requests in @REPO@
+
+[Service]
+# fix-ledger repo: @REPO@
+Type=oneshot
+ExecStart=/usr/bin/python3 "@LIB@/fix-ledger-run" "@REPO@"
+TimeoutStartSec=180

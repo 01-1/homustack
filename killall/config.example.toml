@@ -1,0 +1,60 @@
+# agents-killall configuration. Copy to ~/.config/agents-killall/config.toml and edit.
+#
+# A process is matched by its executable, comm, argv[0] basename, or (for node, bash,
+# sh, python) the script basename in argv[1]. Prompt text and other arguments never
+# match. The first group (in file order) that matches a process owns it. Descendants of
+# every selected process are stopped too, except preserved processes and processes that
+# belong to a kept or not-included group.
+#
+# Unit patterns are shell globs matched against systemd --user unit names
+# (.service, .timer, .path, .socket, .scope). Scopes are always stopped, never
+# disabled. Other units get unit_action: "disable" (disable --now, the default) or
+# "stop" (stop but leave enabled).
+
+# Seconds between SIGTERM and SIGKILL.
+grace_seconds = 5
+
+# Disabled and stopped before anything else, e.g. a watchdog that would restart agents.
+first_units = ["agent-watchdog.service"]
+
+# Never stopped, even beneath a selected process; their own children are spared too.
+[preserve]
+names = ["usage-meter"]
+
+# Agent CLIs: every one this user runs. Every process inside a matching cgroup is
+# stopped too, whatever its name. To stop only agents in those cgroups and leave your
+# own terminal sessions alone, add: only_in_cgroups = ['/agent-session-[^/]*\.scope(?:/|$)']
+[[group]]
+name = "agents"
+names = ["claude", "codex", "aider", "gemini"]
+cgroups = ['/agent-session-[^/]*\.scope(?:/|$)']
+units = ["agent-session-*.scope", "agent-waker.timer", "agent-waker.service"]
+
+# A desktop app that launches agents. `--keep app` leaves it (and its units) running.
+[[group]]
+name = "app"
+names = ["my-agent-app"]
+units = ["app-my-agent-app-*.scope"]
+
+# Model proxies: only stopped with `--include proxies`, and only stopped, not disabled.
+[[group]]
+name = "proxies"
+optional = true
+names = ["llm-proxy"]
+units = ["llm-proxy.service"]
+unit_action = "stop"
+
+# Optional: `ka open`, an emergency stop that an automated recovery agent may run without
+# a terminal. It is the same stop with the `keep` groups left running. Without this table
+# `ka open` is refused. These settings are read only from
+# ~/.config/agents-killall/config.toml, never from the caller's environment or options.
+[ka_open]
+# The recovery agent: an ancestor process started with `--name "Agent Recovery"`.
+# `ka open` never stops it or its descendants; every other real stop is refused
+# beneath it. Run it outside any unit a group would stop.
+recovery_name = "Agent Recovery"
+# Optional argv. When set, it decides instead of the ancestor check and must exit 0,
+# e.g. a check for a human's recorded STOP request. The command is an absolute path
+# or starts with ~/; it runs with only PATH=/usr/bin:/bin, HOME and LANG set.
+# gate = ["~/.local/bin/check-stop-request"]
+keep = ["app"]

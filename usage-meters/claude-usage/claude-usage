@@ -1,0 +1,1580 @@
+#!/usr/bin/python3
+"""Show your usage boxes and the Claude/Codex meters from the local proxies.
+
+Reads only the proxies' own account state: http://127.0.0.1:8318/v0/management/auth-files (Claude;
+quota.signals hold the Anthropic rate-limit headers it already stored) and
+http://127.0.0.1:8317/v0/management/auth-files (Codex; the X-Codex-* headers). Nothing is sent to
+Anthropic or OpenAI. The management keys are read from ~/credentials/cliproxyapi-claude/management-key and
+~/credentials/cliproxyapi/management-key and are never printed. Only email, plan, status, utilization and reset
+times are output.
+
+  claude-usage            current boxes and meters, in meter points
+  claude-usage --log      append one TSV line per account to ~/.local/state/claude-usage/log.tsv
+  claude-usage --warn     log and warn on box spend, projected overruns and caps
+"""
+import argparse
+import csv
+from contextlib import contextmanager
+from datetime import datetime
+import fcntl
+import fnmatch
+import hashlib
+import importlib.util
+import json
+import math
+import os
+import re
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import tomllib
+from types import SimpleNamespace
+import urllib.request
+from zoneinfo import ZoneInfo
+
+HOME = Path.home()
+URL = os.environ.get('CLAUDE_USAGE_CLAUDE_URL') or 'http://127.0.0.1:8318/v0/management/auth-files'
+KEY = HOME / 'credentials/cliproxyapi-claude/management-key'
+CODEX_URL = os.environ.get('CLAUDE_USAGE_CODEX_URL') or 'http://127.0.0.1:8317/v0/management/auth-files'
+CODEX_KEY = HOME / 'credentials/cliproxyapi/management-key'
+CODEX = 'X-Codex-'
+LOG = HOME / '.local/state/claude-usage/log.tsv'
+WARN_STATE = LOG.parent / 'warn-state.json'
+MUST_LAST = HOME / '.config/claude-usage/must-last.json'
+RESETS = HOME / '.config/claude-usage/resets.json'
+DEFAULT_RESETS = {'fable_resets_left': 3, 'fable_share_of_total': 0.5}
+WEEK = 7 * 24 * 3600
+NON_FABLE = "non-Fable (estimate; Fable allowance is half the weekly limit, confirmed by Anthropic's page; meters assumed to be counted alike)"
+SHARED_GUARD = 'Shared all-models guard only; non-Fable pace cannot be verified.'
+BANKED_NOTICE = 'banked Fable reset listed; eligibility/refund amount unverified'
+RESET_ASSUMPTION = ('a reset returns what Fable used to the weekly all-models limit (client text), '
+                    'so it should also lower the all-models meter by the Fable use; the amount is not measured')
+THREAD_FILE = HOME / '.local/state/claude-usage/notify-thread'
+MODAL = HOME / '.local/bin/modal'
+MODAL_LOG = LOG.parent / 'modal.tsv'
+MODAL_STATE = LOG.parent / 'modal-state.json'
+MODAL_JUMP = 2.0  # dollars of new metered cost within one check interval that count as a jump
+ENV_THREAD = os.environ.get('CLAUDE_USAGE_THREAD', '')  # T3 thread that gets usage notices; empty: none
+T3 = HOME / '.t3/bin/t3'
+DEFAULT_MUST_LAST = {'must_last': []}  # deadlines usage must last until; set them in the must-last file
+ET = ZoneInfo('America/New_York')
+MATRIX_COPY_ALL = True  # the same readable Matrix batch to the currently selected coordinator.
+PREFIX = 'Anthropic-Ratelimit-Unified-'
+BOXES = HOME / '.config/claude-usage/boxes.toml'
+BOX_STATE = LOG.parent / 'boxes-state.json'
+GUARD_STATE = LOG.parent / 'hard-stops.json'
+AUTH_DIRS = {'claude': HOME / '.cli-proxy-api-claude/auth', 'codex': HOME / '.cli-proxy-api/auth'}
+
+
+def fetch(url=URL, key_file=KEY, opener=urllib.request.urlopen):
+    request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + key_file.read_text().strip()})
+    with opener(request, timeout=8) as response:
+        return json.loads(response.read())
+
+
+def observation_time(value):
+    try:
+        stamp = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return stamp.timestamp() if stamp.tzinfo else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def fable_excluded_accounts():
+    """Read local exclusion metadata only; never emit credentials or modify auth."""
+    result = set()
+    for path in AUTH_DIRS['claude'].glob('*.json'):
+        try:
+            value = json.loads(path.read_text())
+            rules = value.get('excluded_models', [])
+            if isinstance(rules, list) and any(isinstance(rule, str) and
+                    fnmatch.fnmatchcase('claude-fable-5-2', rule.lower()) for rule in rules):
+                result.add(value.get('email'))
+        except (OSError, ValueError, TypeError):
+            pass
+    return result
+
+
+def parse(data, excluded_accounts=None):
+    """-> account rows with safe identity/status fields and independent usage meters."""
+    files = data if isinstance(data, list) else data.get('files', [])
+    excluded_accounts = fable_excluded_accounts() if excluded_accounts is None else excluded_accounts
+    out = []
+    for f in files:
+        if f.get('provider') not in (None, 'claude'):
+            continue
+        quota = f.get('quota') or {}
+        signals = quota.get('signals') or {}
+        models = quota.get('model_quotas') or f.get('model_quotas') or {}
+        fable_quota = models.get('claude-fable-5-2') or {}
+        get = lambda k: signals.get(PREFIX + k)
+        paired, paired_time = None, None
+        fable_value, fable_reset, fable_time = None, None, None
+        snapshots = sorted((quota, fable_quota),
+                           key=lambda q: observation_time(q.get('observed_at')) or -math.inf, reverse=True)
+        for snapshot in snapshots:
+            sig = snapshot.get('signals') or {}
+            a, fable_value = number(sig.get(PREFIX + '7d-Utilization')), number(sig.get(PREFIX + '7d_oi-Utilization'))
+            if a is not None and fable_value is not None:
+                paired = max(0., 200 * a - 100 * fable_value)
+                paired_time = observation_time(snapshot.get('observed_at'))
+                break
+        # Account-wide responses can carry the model signal too. Absence of
+        # a model_quotas entry is not evidence of zero Fable traffic.
+        fable_value = None
+        for snapshot in snapshots:
+            sig = snapshot.get('signals') or {}
+            value = number(sig.get(PREFIX + '7d_oi-Utilization'))
+            if value is not None:
+                fable_value = value
+                fable_reset = number(sig.get(PREFIX + '7d_oi-Reset'))
+                fable_time = observation_time(snapshot.get('observed_at'))
+                break
+        out.append(dict(provider='claude', email=f.get('email') or f.get('label') or '?', status=f.get('status'),
+                        u5=get('5h-Utilization'), r5=get('5h-Reset'),
+                        u7=get('7d-Utilization'), r7=get('7d-Reset'),
+                        uf=fable_value,
+                        rf=fable_reset if fable_reset is not None else number(get('7d_oi-Reset')),
+                        nf_points=paired, nf_observed_at=paired_time,
+                        fable_excluded=(f.get('email') in excluded_accounts or any(
+                            isinstance(rule, str) and fnmatch.fnmatchcase('claude-fable-5-2', rule.lower())
+                            for rule in (f.get('excluded_models') or []))),
+                        fable_no_traffic=f.get('fable_no_traffic') is True,
+                        observed_at=observation_time(quota.get('observed_at')),
+                        fable_observed_at=fable_time))
+    return out
+
+
+def codex_availability(entry, checked_at):
+    """Safe scheduler evidence from this existing cached response, not quota age.
+
+    Quota error type alone does NOT prove credential scope: v8.0.63 permits
+    model-level cooling. Only an explicit runtime credential-scope assertion or
+    a disabled credential can certify exclusion. The old v0 shape lacks that
+    assertion; preserve unknown rather than infer it from error text.
+    """
+    code = None
+    try:
+        message = json.loads(entry.get('status_message', ''))
+        for error in (message.get('error'), message, (message.get('body') or {}).get('error')):
+            if isinstance(error, dict) and str(error.get('type', '')).strip().lower() == 'usage_limit_reached':
+                code = 'usage_limit_reached'
+    except (ValueError, TypeError, AttributeError):
+        pass
+    disabled = entry.get('disabled') if type(entry.get('disabled')) is bool else None
+    unavailable = entry.get('unavailable') if type(entry.get('unavailable')) is bool else None
+    status = entry.get('status') if entry.get('status') in ('active', 'error', 'disabled') else None
+    retry = observation_time(entry.get('next_retry_after'))
+    reason = ('disabled' if disabled is True else
+              'codex_usage_limit_reached' if unavailable is True and status == 'error' and code else None)
+    explicit_scope = entry.get('quota_scope') == 'credential'
+    return dict(version=1, checked_at=checked_at, disabled=disabled, unavailable=unavailable,
+                status=status, scope='credential' if reason == 'disabled' or (reason and explicit_scope) else 'unknown', reason=reason,
+                blocked_until=retry if reason == 'codex_usage_limit_reached' else None)
+
+
+def parse_codex(data, checked_at=None):
+    """-> list of dict like parse(), for Codex accounts. The primary window is 5 h (300 min) or 7 d (10080 min);
+    the secondary one is the weekly window. Utilization is a 0-1 fraction; a missing figure stays None."""
+    files = data if isinstance(data, list) else data.get('files', [])
+    checked_at = datetime.now().timestamp() if checked_at is None else checked_at
+    out = []
+    for f in files:
+        if f.get('provider') not in (None, 'codex'):
+            continue
+        sig = (f.get('quota') or {}).get('signals') or {}
+        num = lambda k: (float(sig[CODEX + k]) if sig.get(CODEX + k) not in (None, '') else None)
+        row = dict(provider='codex', email=f.get('email') or f.get('label') or '?', status=f.get('status'),
+                   plan=sig.get(CODEX + 'Plan-Type'), retry=f.get('next_retry_after'),
+                   u5=None, r5=None, u7=None, r7=None, exposed=any(k.startswith(CODEX) for k in sig),
+                   observed_at=observation_time((f.get('quota') or {}).get('observed_at')),
+                   availability=codex_availability(f, checked_at))
+        pu, pr, window = num('Primary-Used-Percent'), num('Primary-Reset-At'), num('Primary-Window-Minutes')
+        su, sr = num('Secondary-Used-Percent'), num('Secondary-Reset-At')
+        if pu is not None:
+            if window == 300:
+                row['u5'], row['r5'] = pu / 100, pr
+            else:
+                row['u7'], row['r7'] = pu / 100, pr
+        if su is not None and row['u7'] is None:
+            row['u7'], row['r7'] = su / 100, sr
+        out.append(row)
+    return out
+
+
+def when(epoch):
+    return datetime.fromtimestamp(int(epoch), ET).strftime('%a %m/%d %H:%M ET') if epoch else '-'
+
+
+def pct(value):
+    return f'{float(value) * 100:.0f}%' if value is not None else '-'
+
+
+def render(rows, history=(), now=None, resets=None):
+    now = now or datetime.now(ET)
+    resets = reset_config() if resets is None else resets
+    lines = []
+    for r in rows:
+        extra = ''
+        if r.get('provider') == 'codex':
+            if not r.get('exposed'):
+                lines.append(f"codex {r['email']}: {r['status']} | the proxy exposes no usage figures")
+                continue
+            extra = f" | plan {r.get('plan') or '-'}" + (f" | retry {r['retry'][:16]}" if r.get('retry') else '')
+        lines.append(f"{r['provider'] + ' ' if r.get('provider') == 'codex' else ''}{r['email']}: {r['status']} | 5h {pct(r['u5'])} "
+                     f"(resets {when(r['r5'])}) | 7d {pct(r['u7'])} (resets {when(r['r7'])}){extra}")
+        if r.get('provider', 'claude') == 'claude':
+            lines.append(f"  all models (7d) {pct(r.get('u7'))} | Fable limit (7d_oi) {pct(r.get('uf'))}")
+            lines.append(f"  Fable resets left: {resets['fable_resets_left']}")
+            lines.append('  ASSUMPTION: ' + RESET_ASSUMPTION + '.')
+            lines.append('  Banked Fable resets do not reset non-Fable usage.')
+            value = meter_value(r, 'non-fable', resets)
+            reset = meter_reset(r, 'non-fable')
+            if value is None:
+                missing = 'Fable meter missing' if number(r.get('uf')) is None else 'all-models meter missing'
+                lines.append(f'  {NON_FABLE}: non-Fable: not derivable ({missing})')
+            elif reset is None:
+                lines.append(f'  {NON_FABLE}: {value * 100:.1f}% of the week used; reset-aware pace unknown')
+            else:
+                elapsed = week_elapsed(reset, now)
+                pace = 'OVER' if value > elapsed else 'UNDER'
+                ratio = f'{value / elapsed:.2f}' if elapsed else ('infinite' if value else 'undefined (0/0)')
+                lines.append(f'  {NON_FABLE}: {value * 100:.1f}% of the week used vs '
+                             f'{elapsed * 100:.1f}% of the week elapsed: {pace} pace (N/E {ratio})')
+            if resets.get('fable_share_of_total', 0.5) != 0.5:
+                lines.append(f"  {NON_FABLE}: configured share {resets['fable_share_of_total'] * 100:g}% overrides 50%")
+        for window in ('5h', '7d'):
+            if number(r.get('u' + window[0])) is not None:
+                p = project(r, window, history, now, resets)
+                reset = meter_reset(r, window)
+                detail = projection_detail(p, reset)
+                lines.append(f'  {window}: {detail}')
+        if r.get('provider', 'claude') == 'claude':
+            p = project(r, 'fable', history, now, resets)
+            detail = projection_detail(p, meter_reset(r, 'fable'))
+            if before_reset(p, meter_reset(r, 'fable'), now) and resets['fable_resets_left']:
+                detail += '; ' + BANKED_NOTICE
+            lines.append(f'  Fable limit (7d_oi): {detail}')
+            p = project(r, 'non-fable', history, now, resets)
+            lines.append(f'  {NON_FABLE} projection: {projection_detail(p, r.get("r7"))}; '
+                         'the Fable resets do not cover this')
+    return '\n'.join(lines)
+
+
+def tsv(rows, now):
+    stamp = now.astimezone(ET).strftime('%Y-%m-%dT%H:%M:%S')
+    return ''.join('\t'.join([stamp, r['email'], str(r['status']), str(r['u5'] if r['u5'] is not None else ''),
+                              str(r['u7'] if r['u7'] is not None else ''), str(int(r['r7']) if r['r7'] else ''),
+                              r.get('provider', 'claude'), str(int(r['r5']) if r['r5'] else ''),
+                              str(r['uf']) if number(r.get('uf')) is not None else '',
+                              str(int(r['rf'])) if number(r.get('rf')) is not None else '']) + '\n' for r in rows)
+
+
+HEADER = 'time_et\temail\tstatus\tutil_5h\tutil_7d\treset_7d_epoch\tprovider\treset_5h_epoch\tutil_7d_fable\treset_7d_fable_epoch\n'
+
+
+def atomic_write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as out:
+            out.write(text)
+        os.replace(temporary, path)  # mkstemp creates mode 0600
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def prepare_log():
+    """Add missing columns by name, preserving existing values and blank unknowns."""
+    LOG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not LOG.exists():
+        atomic_write(LOG, HEADER)
+        return
+    lines = LOG.read_text().splitlines()
+    if not lines:
+        atomic_write(LOG, HEADER)
+    elif lines[0] != HEADER.rstrip('\n'):
+        old_header = lines[0].split('\t')
+        migrated = [HEADER.rstrip('\n')]
+        for line in lines[1:]:
+            row = dict(zip(old_header, line.split('\t')))
+            row.setdefault('provider', 'claude')
+            migrated.append('\t'.join(row.get(k, '') for k in HEADER.strip().split('\t')))
+        atomic_write(LOG, '\n'.join(migrated) + '\n')
+
+
+def number(value):
+    try:
+        value = float(value)
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def reset_config(path=None):
+    """Read manual reset inventory; never consume resets or write this config."""
+    path = RESETS if path is None else path
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return dict(DEFAULT_RESETS)
+    except (OSError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        count = data.get('fable_resets_left', DEFAULT_RESETS['fable_resets_left'])
+        raw_share = data.get('fable_share_of_total', 0.5)
+        share = number(raw_share)
+        marker = reset_marker(data.get('fable_reset_at'))
+        if (type(count) is int and count >= 0 and not isinstance(raw_share, bool)
+                and share is not None and 0 <= share <= 1
+                and (data.get('fable_reset_at') is None or marker is not None)):
+            result = {'fable_resets_left': count, 'fable_share_of_total': share}
+            if marker is not None:
+                result['fable_reset_at'] = marker
+            return result
+    # A bad existing file must not silently promise banked resets.
+    print('claude-usage: resets config invalid; assuming no banked resets', file=sys.stderr)
+    return dict(DEFAULT_RESETS, fable_resets_left=0)
+
+
+def reset_marker(value):
+    if value is None or isinstance(value, bool):
+        return None
+    epoch = number(value)
+    if epoch is None and isinstance(value, str):
+        try:
+            at = datetime.fromisoformat(value)
+            epoch = at.timestamp() if at.utcoffset() is not None else None
+        except (ValueError, OverflowError):
+            pass
+    return epoch if epoch is not None and epoch >= 0 else None
+
+
+def meter_reset(row, window):
+    value = number(row.get('rf' if window == 'fable' else 'r7' if window == 'non-fable' else 'r' + window[0]))
+    # The TSV log keeps whole epoch seconds; truncate live values the same way so a fractional
+    # live reset is not mistaken for a new reset window.
+    return None if value is None else float(int(value))
+
+
+def meter_value(row, window, resets):
+    if window == 'non-fable':
+        all_models, fable = number(row.get('u7')), number(row.get('uf'))
+        if all_models is None or fable is None:
+            return None
+        return max(0, all_models - resets.get('fable_share_of_total', 0.5) * fable)
+    return number(row.get('uf' if window == 'fable' else 'u' + window[0]))
+
+
+def week_elapsed(reset, now):
+    return max(0, min(1, 1 - (reset - now.timestamp()) / WEEK))
+
+
+def before_reset(projection, reset, now):
+    reset = number(reset)
+    return (projection['status'] == 'burn' and reset is not None
+            and now.timestamp() < reset and projection['at'] < reset)
+
+
+def projection_detail(projection, reset):
+    boundary = projection.get('boundary_at')
+    extra = f'; accounting boundary {short_when(boundary)} (unknown cause)' if boundary is not None else ''
+    if projection['status'] != 'burn':
+        return 'net observed pace: ' + projection['status'] + extra
+    basis = '2 h' if projection['minutes'] == 120 else '30 min'
+    detail = f"net observed pace; at the last {basis} pace: reaches 100% {short_when(projection['at'])}"
+    reset = number(reset)
+    if reset is not None:
+        relation = 'before' if projection['at'] < reset else 'at or after'
+        detail += f'; {relation} its {short_when(reset)} reset'
+    return detail + extra
+
+
+def read_log(path):
+    rows = []
+    try:
+        with path.open() as source:
+            for r in csv.DictReader(source, delimiter='\t'):
+                try:
+                    stamp = datetime.fromisoformat(r['time_et'])
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=ET)
+                    rows.append(dict(time=stamp.timestamp(), email=r['email'], status=r['status'],
+                                     provider=r.get('provider') or 'claude',
+                                     u5=number(r.get('util_5h')), u7=number(r.get('util_7d')),
+                                     uf=number(r.get('util_7d_fable')),
+                                     rf=number(r.get('reset_7d_fable_epoch')),
+                                     r5=number(r.get('reset_5h_epoch')), r7=number(r.get('reset_7d_epoch'))))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return rows
+
+
+def short_when(epoch):
+    return datetime.fromtimestamp(epoch, ET).strftime('%a %H:%M ET')
+
+
+def meter_discontinuity(previous, point, window, resets):
+    old, new = meter_value(previous, window, resets), meter_value(point, window, resets)
+    old_reset, new_reset = meter_reset(previous, window), meter_reset(point, window)
+    return ((old is not None and new is not None and new < old)
+            or (old_reset is not None and new_reset is not None and new_reset != old_reset)
+            or (old_reset is not None and previous['time'] < old_reset <= point['time']))
+
+
+def project(row, window, history, now, resets=None):
+    """Net endpoint rates within uninterrupted accounting spans; no ETA past reset.
+
+    Inspect older rows for boundaries too, but use only 30/120-minute endpoints for
+    rates. A Fable accounting discontinuity invalidates the shared weekly span.
+    Boundary cause/refund amounts cannot be inferred from sampled utilization.
+    """
+    resets = reset_config() if resets is None else resets
+    current = meter_value(row, window, resets)
+    stamp = now.timestamp()
+    points = [r for r in history if r.get('email') == row['email']
+              and r.get('provider', 'claude') == row.get('provider', 'claude') and r['time'] < stamp]
+    points.sort(key=lambda r: r['time'])
+    points.append(dict(row, time=stamp))
+    shared = row.get('provider', 'claude') == 'claude' and window in ('7d', 'fable', 'non-fable')
+    marker = number(resets.get('fable_reset_at')) if shared else None
+    boundary = marker if marker is not None and marker <= stamp else None
+    span, previous = [], None
+    for point in points:
+        if previous is not None:
+            changed = meter_discontinuity(previous, point, window, resets)
+            if shared:
+                changed |= meter_discontinuity(previous, point, 'fable', resets)
+            if window == 'non-fable':
+                changed |= meter_discontinuity(previous, point, '7d', resets)
+            if changed:
+                boundary = max(boundary or 0, point['time'])
+                span = []
+        previous = point
+        if boundary is not None and point['time'] < boundary:
+            continue
+        value, reset = meter_value(point, window, resets), meter_reset(point, window)
+        fable_reset = meter_reset(point, 'fable') if window == 'non-fable' else reset
+        if (value is None or reset is None or reset <= point['time']
+                or fable_reset is None or fable_reset <= point['time']):
+            span = []
+            continue
+        span.append(point)
+    metadata = {'boundary_at': boundary, 'boundary_cause': 'unknown cause'} if boundary is not None else {}
+    if current is None:
+        return dict(metadata, status='no data')
+    reset = meter_reset(row, window)
+    if reset is None:
+        return dict(metadata, status='reset-aware pace unknown (reset missing)')
+    if reset <= stamp:
+        return dict(metadata, status='reset-aware pace unknown (reset deadline passed)')
+    if window == 'non-fable':
+        fable_reset = meter_reset(row, 'fable')
+        if fable_reset is None or fable_reset <= stamp:
+            return dict(metadata, status='reset-aware pace unknown (Fable reset missing or passed)')
+        reset = min(reset, fable_reset)
+    rates = []
+    for minutes in (120, 30):
+        recent = [p for p in span if p['time'] >= stamp - minutes * 60]
+        if not recent:
+            continue
+        elapsed = stamp - recent[0]['time']
+        if elapsed >= 900:
+            rates.append(((current - meter_value(recent[0], window, resets)) * 3600 / elapsed, minutes))
+    if not rates:
+        status = 'collecting post-reset pace' if boundary is not None else 'not enough data'
+        return dict(metadata, status=status)
+    rate, minutes = max(rates, key=lambda item: item[0])
+    if rate <= 0:
+        return dict(metadata, status='no burn')
+    at = stamp + max(0, 1 - current) * 3600 / rate
+    # Keep the measured rate, but never publish an exhaustion ETA beyond this span.
+    if at >= reset:
+        return dict(metadata, status='no exhaustion before next reset', rate=rate, minutes=minutes)
+    return dict(metadata, status='burn', rate=rate, minutes=minutes, at=at)
+
+
+def must_last_times(path, now):
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        data = DEFAULT_MUST_LAST
+    except (OSError, ValueError):
+        print('claude-usage: must-last config unreadable', file=sys.stderr)
+        return []
+    result = []
+    entries = data.get('must_last', []) if isinstance(data, dict) else []
+    if not isinstance(entries, list):
+        entries = []
+    for entry in entries:
+        try:
+            at = datetime.fromisoformat(entry['at'])
+            if at.utcoffset() is None or not isinstance(entry['label'], str):
+                continue
+            if at.timestamp() > now.timestamp():
+                result.append((at.timestamp(), entry['label']))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return sorted(result)
+
+
+def warning_line(row, window, projection, now, milestones):
+    reset = number(row.get('r' + window[0]))
+    # Milestones only annotate a warning; they never extend the current reset window.
+    if (projection['status'] != 'burn' or reset is None
+            or not now.timestamp() < reset or not projection['at'] < reset):
+        return None
+    basis = '2 hours' if projection['minutes'] == 120 else '30 minutes'
+    label = 'Claude' if row.get('provider', 'claude') == 'claude' else 'Codex'
+    window_label = '5-hour' if window == '5h' else '7-day'
+    if label == 'Claude' and window == '7d':
+        window_label += ' all-models'
+    before = next((label for at, label in milestones if projection['at'] < at < reset), None)
+    extra = f' (and before {before})' if before else ''
+    line = (f"{label} {row['email']}: at the last {basis}' pace the {window_label} window "
+            f"runs out {short_when(projection['at'])}, before its {short_when(reset)} reset{extra}.")
+    if label == 'Claude' and window == '7d':
+        return line + (' confirmed: 7d is Current week (all models); assumed: ' + RESET_ASSUMPTION
+                       + '. Net observed pace. ' + SHARED_GUARD)
+    return line + ' Net observed pace.'
+
+
+def fable_warning_line(row, projection, now, resets):
+    reset = meter_reset(row, 'fable')
+    if not before_reset(projection, reset, now):
+        return None
+    basis = '120-minute' if projection['minutes'] == 120 else '30-minute'
+    left = resets['fable_resets_left']
+    suffix = BANKED_NOTICE + '.' if left else 'no banked Fable resets remain.'
+    return (f"Fable {row['email']}: at the last {basis} pace the Fable limit "
+            f"runs out {short_when(projection['at'])}, before its {short_when(reset)} reset; "
+            f"{suffix} ASSUMPTION: {RESET_ASSUMPTION}. Net observed pace.")
+
+
+def non_fable_candidates(row, history, now, resets):
+    value = meter_value(row, 'non-fable', resets)
+    reset = meter_reset(row, 'non-fable')
+    p = project(row, 'non-fable', history, now, resets)
+    line = None
+    if before_reset(p, reset, now):
+        basis = '120-minute' if p['minutes'] == 120 else '30-minute'
+        line = (f"Claude {row['email']} {NON_FABLE}: at the last {basis} pace it runs out "
+                f"{short_when(p['at'])}, before its {short_when(reset)} reset; "
+                'the Fable resets do not cover this. Net observed pace.')
+    candidates = [('non-fable', p, line, 'alarm', value)]
+    elapsed = week_elapsed(reset, now) if reset is not None else None
+    line = None
+    if (value is not None and elapsed is not None and reset > now.timestamp()
+            and value > 1.15 * elapsed and not math.isclose(value, 1.15 * elapsed, abs_tol=1e-12)):
+        line = (f"Claude {row['email']} {NON_FABLE}: {value * 100:.1f}% used, "
+                f"{elapsed * 100:.1f}% of the week elapsed, over pace.")
+    # Elapsed-week pace needs no burn history, but shares its accounting boundary.
+    pace = dict(p, at=now.timestamp())
+    candidates.append(('non-fable-pace', pace, line, 'alarm',
+                       value if reset is not None and reset > now.timestamp() else None))
+    return candidates
+
+
+def send_thread(text, thread_file=None, run=None):
+    thread_file = THREAD_FILE if thread_file is None else thread_file
+    run = subprocess.run if run is None else run
+    try:
+        val = thread_file.read_text().strip()
+    except OSError:
+        val = ''
+    targets = [t for t in dict.fromkeys((val, ENV_THREAD)) if t]
+    for target in targets:
+        try:
+            result = run([str(T3), 'thread', 'send', target, '-', '--mode', 'auto'],
+                         input=text, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         timeout=20, check=False)
+            if result.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return False
+
+
+def desktop_notify(line, run=None):
+    run = subprocess.run if run is None else run
+    try:
+        result = run(['env', '-u', 'LD_LIBRARY_PATH', '-u', 'LD_PRELOAD',
+                      f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{os.getuid()}/bus',
+                      'notify-send', '-u', 'critical', '-a', 'claude-usage', 'Usage', line],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def warn(rows, history, now, state_path=None, config_path=None,
+         thread_sender=None, desktop_sender=None, resets_path=None):
+    state_path = WARN_STATE if state_path is None else state_path
+    config_path = MUST_LAST if config_path is None else config_path
+    thread_sender = send_thread if thread_sender is None else thread_sender
+    desktop_sender = desktop_notify if desktop_sender is None else desktop_sender
+    try:
+        state = json.loads(state_path.read_text())
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    milestones = must_last_times(config_path, now)
+    resets = reset_config(resets_path)
+    pending = []
+    for row in rows:
+        exhausted = any(number(row.get(k)) is not None and number(row[k]) >= 1 for k in ('u5', 'u7'))
+        candidates = []
+        for window in ('5h', '7d'):
+            p = project(row, window, history, now, resets)
+            line = warning_line(row, window, p, now, milestones)
+            candidates.append((window, p, line, 'alarm', number(row.get('u' + window[0]))))
+        if row.get('provider', 'claude') == 'claude':
+            p = project(row, 'fable', history, now, resets)
+            severity = 'info' if resets['fable_resets_left'] > 0 else 'alarm'
+            candidates.append(('fable', p, fable_warning_line(row, p, now, resets), severity, number(row.get('uf'))))
+            candidates.extend(non_fable_candidates(row, history, now, resets))
+        for window, p, line, severity, value in candidates:
+            key = json.dumps([row.get('provider', 'claude'), row['email'], window])
+            derived = window.startswith('non-fable')
+            if (row.get('status') != 'active' or (exhausted and not derived)
+                    or (window == 'fable' and value is not None and value >= 1)):
+                previous = state.get(key)
+                if window == 'non-fable-pace' and isinstance(previous, dict):
+                    previous['active'] = False
+                elif not isinstance(previous, dict) or previous.get('severity') != 'info':
+                    state.pop(key, None)
+                continue
+            previous = state.get(key)
+            if not isinstance(previous, dict):
+                previous = None
+            boundary = p.get('boundary_at')
+            if previous and boundary is not None and boundary > (number(previous.get('boundary_at')) or 0):
+                # Accounting changes cannot establish a recovery. Discard the old
+                # forecast silently and let post-boundary samples establish a new one.
+                if window == 'non-fable-pace':
+                    # Keep its six-hour delivery limit through a rebaseline.
+                    previous.update(boundary_at=boundary, active=False)
+                else:
+                    state.pop(key, None)
+                    previous = None
+            if value is None:
+                continue
+            if window != 'non-fable-pace' and (p['status'] in ('no data', 'collecting post-reset pace', 'not enough data')
+                                               or p['status'].startswith('reset-aware pace unknown')):
+                continue
+            previous_severity = previous.get('severity', 'alarm') if previous else None
+            warned_at = number(previous.get('warned_at')) if previous else None
+            previous_at = number(previous.get('run_out_at')) if previous else None
+            if derived:
+                label = NON_FABLE + (' over-pace' if window == 'non-fable-pace' else ' projection')
+            else:
+                label = 'Fable limit' if window == 'fable' else window
+            recovery = f"{row.get('provider', 'claude').title()} {row['email']} {label}: back on pace."
+            if row.get('provider', 'claude') == 'claude' and window == '7d':
+                recovery += ' ' + SHARED_GUARD
+            if line:
+                if previous_severity == 'alarm' and severity == 'info':
+                    pending.append((key, recovery, None, 'alarm'))
+                interval = 21600 if severity == 'info' or window == 'non-fable-pace' else 3600
+                if (warned_at is not None and previous_at is not None
+                        and previous_severity == severity
+                        and now.timestamp() - warned_at < interval
+                        and (window == 'non-fable-pace' or previous_at - p['at'] <= 3600)):
+                    if window == 'non-fable-pace':
+                        previous['active'] = True
+                    continue
+                pending.append((key, line, {'warned_at': now.timestamp(), 'run_out_at': p['at'],
+                                            'severity': severity, 'boundary_at': boundary,
+                                            'boundary_cause': p.get('boundary_cause'), 'active': True}, severity))
+            elif previous and previous_severity == 'alarm' and previous.get('active', True):
+                replacement = dict(previous, active=False) if window == 'non-fable-pace' else None
+                pending.append((key, recovery, replacement, 'alarm'))
+            # Keep informational delivery timestamps through quiet periods for the 6h limit.
+    if pending:
+        lines = [line for _, line, _, _ in pending]
+        print('\n'.join(lines))
+        thread_ok = thread_sender('\n'.join('For you: ' + line for line in lines))
+        for key, line, replacement, severity in pending:
+            desktop_ok = desktop_sender(line) if severity == 'alarm' else False
+            if thread_ok or desktop_ok:
+                if replacement is None:
+                    state.pop(key, None)
+                else:
+                    state[key] = replacement
+    atomic_write(state_path, json.dumps(state, sort_keys=True) + '\n')
+    return [line for _, line, _, _ in pending]
+
+
+def fetch_modal(run=None):
+    """Month-to-date Modal billing via the Modal CLI (it reads its own credentials; none are touched here)."""
+    run = subprocess.run if run is None else run
+    result = run([str(MODAL), 'billing', 'summary', '--json'], capture_output=True, text=True,
+                 timeout=45, check=False)
+    if result.returncode != 0:
+        raise OSError('modal billing summary failed')
+    return parse_modal(json.loads(result.stdout))
+
+
+def parse_modal(data):
+    def dollars(value):
+        return float(value)
+    credits = -dollars(data['adjustments']['credits'])
+    return {'metered': dollars(data['metered_cost']), 'billed': dollars(data['billed_cost']),
+            'credits': credits}
+
+
+def render_modal(m):
+    return (f"Modal (this month): metered ${m['metered']:.2f}, credits applied ${m['credits']:.2f}, "
+            f"billed ${m['billed']:.2f}. (Modal reports no remaining-credit balance; "
+            "the credit figure is what was applied this month.)")
+
+
+def modal_lines(m, state, now):
+    """Warning lines for one observation; mutates `state`. Alarm: real money billed. Info: spend jump."""
+    lines = []
+    previous = state.get('metered')
+    if previous is not None and m['metered'] - previous >= MODAL_JUMP:
+        lines.append(f"Modal spend jumped ${m['metered'] - previous:.2f} in one check "
+                     f"(month metered now ${m['metered']:.2f}); credits applied ${m['credits']:.2f}, "
+                     f"billed ${m['billed']:.2f}.")
+    warned = state.get('billed_warned', 0.0)
+    if m['billed'] > 0 and (warned == 0.0 or m['billed'] >= warned + 0.5):
+        lines.append(f"Modal is BILLING real money: ${m['billed']:.2f} billed this month "
+                     f"(metered ${m['metered']:.2f}, credits applied ${m['credits']:.2f}). "
+                     "Spending over $2 needs your approval.")
+        state['billed_warned'] = m['billed']
+    state['metered'] = m['metered']
+    return lines
+
+
+def modal_check(now, fetcher=None, state_path=None, log_path=None, thread_sender=None, desktop_sender=None):
+    """Log Modal spend and send warnings; any failure is silent so the other checks are never affected."""
+    state_path = MODAL_STATE if state_path is None else state_path
+    log_path = MODAL_LOG if log_path is None else log_path
+    thread_sender = send_thread if thread_sender is None else thread_sender
+    desktop_sender = desktop_notify if desktop_sender is None else desktop_sender
+    try:
+        m = (fetch_modal if fetcher is None else fetcher)()
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return []
+    try:
+        state = json.loads(state_path.read_text())
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    new_state = dict(state)
+    lines = modal_lines(m, new_state, now)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, 'a') as out:
+        out.write('\t'.join([now.astimezone(ET).strftime('%Y-%m-%dT%H:%M:%S'), f"{m['metered']:.4f}",
+                             f"{m['billed']:.4f}", f"{m['credits']:.4f}"]) + '\n')
+    if lines:
+        print('\n'.join(lines))
+        ok = thread_sender('\n'.join('For you: ' + line for line in lines))
+        if any('BILLING' in line for line in lines):
+            desktop_sender(next(line for line in lines if 'BILLING' in line))
+        if not ok:
+            return lines  # keep the old state, so the same warnings are tried again on the next check
+    state = new_state
+    atomic_write(state_path, json.dumps(state, sort_keys=True) + '\n')
+    return lines
+
+
+def send_direct(line, run=None):
+    """Reuse the installed DM sender without waking agents or exposing credentials.
+
+    A child bounds the shared sender's retries. Only the message travels on stdin;
+    bot credentials and the DM channel stay inside the child, and errors stay private.
+    """
+    run = subprocess.run if run is None else run
+    code = '''import sys
+from pathlib import Path
+h = Path.home()
+sys.path.insert(0, str(h / '.local/lib/discord-notify'))
+import notify_discord as n
+channel = None
+for line in (h / 'credentials/discord/bot.env').read_text().splitlines():
+    key, _, value = line.partition('=')
+    if key.strip() == 'DISCORD_DM_CHANNEL':
+        channel = value.strip().strip(chr(34) + chr(39))
+if not channel or not channel.isdigit():
+    raise SystemExit(1)
+n.send_long(sys.stdin.read(), channel=channel)
+'''
+    try:
+        result = run(['/usr/bin/python3', '-c', code], input='Usage: ' + line,
+                     text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     timeout=20, check=False)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def read_boxes(path=None):
+    """No implicit boxes or budgets. Invalid configuration never disables cap alerts."""
+    path = BOXES if path is None else path
+    try:
+        data = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        return [], 'No usage boxes set. Edit ' + str(path) + '; cap alerts remain on.'
+    except (OSError, ValueError):
+        return [], 'Usage boxes could not be read. Fix ' + str(path) + '; cap alerts remain on.'
+    try:
+        if type(data.get('approved')) is not bool:
+            raise ValueError
+        boxes, names = [], set()
+        for item in data['boxes']:
+            name, start, end, allow = item['name'], item['start'], item['end'], item['allow']
+            # TOML supports quoted ISO dates as well as native offset datetimes.
+            start = datetime.fromisoformat(start) if isinstance(start, str) else start
+            end = datetime.fromisoformat(end) if isinstance(end, str) else end
+            if (not isinstance(name, str) or not name.strip() or '\n' in name
+                    or len(name) > 60 or name in names or start.utcoffset() is None
+                    or end.utcoffset() is None or end <= start or not isinstance(allow, dict) or not allow):
+                raise ValueError
+            for pool, amount in allow.items():
+                provider, email, window = pool.split(':')
+                if (provider not in ('claude', 'codex') or not email or '\n' in email
+                        or window not in (('all', 'fable') if provider == 'claude' else ('week', '5h'))
+                        or isinstance(amount, bool) or number(amount) is None or amount < 0):
+                    raise ValueError
+            names.add(name)
+            minutes = item.get('repeat_minutes')
+            if minutes is None:
+                boxes.append(dict(name=name, start=start.timestamp(), end=end.timestamp(), allow=allow))
+            else:
+                if type(minutes) is not int or minutes != 60:
+                    raise ValueError
+                # Explicit hourly schedule, not a budget invented by the tool.
+                # Bound expansion so a typo cannot make the timer unresponsive.
+                count = math.ceil((end.timestamp() - start.timestamp()) / 3600)
+                if count > 24 * 366:
+                    raise ValueError
+                for index in range(count):
+                    first = start.timestamp() + index * 3600
+                    last = min(first + 3600, end.timestamp())
+                    label = (name + ' (' + datetime.fromtimestamp(first, ET).strftime('%a %H:%M')
+                             + '–' + datetime.fromtimestamp(last, ET).strftime('%H:%M') + ')')
+                    boxes.append(dict(name=label, start=first, end=last, allow=allow,
+                                      series=name, schedule_end=end.timestamp()))
+        if not boxes:
+            raise ValueError
+        return boxes, None if data['approved'] else 'Proposed boxes only: approval is still needed; cap alerts remain on.'
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return [], 'Usage boxes are invalid. Fix ' + str(path) + '; cap alerts remain on.'
+
+
+def pool_parts(pool):
+    provider, email, window = pool.split(':')
+    return provider, email, {'all': '7d', 'week': '7d', 'fable': 'fable', 'non-fable': 'non-fable', '5h': '5h'}[window]
+
+
+def current_boxes(boxes, now):
+    """Show each schedule's current hour, not pages of past/future periods."""
+    result, schedules = [], {}
+    for box in boxes:
+        if 'series' in box:
+            schedules.setdefault(box['series'], []).append(box)
+        else:
+            result.append(box)
+    stamp = now.timestamp()
+    for periods in schedules.values():
+        current = next((b for b in periods if b['start'] <= stamp < b['end']), None)
+        result.append(current or next((b for b in periods if b['start'] > stamp), periods[-1]))
+    return result
+
+
+def pool_label(pool):
+    provider, email, window = pool.split(':')
+    label = {'all': 'all models', 'fable': 'Fable', 'week': 'weekly', '5h': '5-hour'}[window]
+    return f"{provider.title()} {email} {label}"
+
+
+def pool_points(row, window):
+    value = meter_value(row, window, {})
+    return None if value is None or value < 0 else value * 100
+
+
+def duration(seconds):
+    minutes = max(0, math.ceil(seconds / 60))
+    days, minutes = divmod(minutes, 1440)
+    hours, minutes = divmod(minutes, 60)
+    parts = ([f'{days}d'] if days else []) + ([f'{hours}h'] if hours else [])
+    if minutes or not parts:
+        parts.append(f'{minutes}m')
+    return ' '.join(parts)
+
+
+def box_reading(box, pool, rows, history, now):
+    """Accumulate consumption, never refund a box on a meter reset.
+
+    A sample immediately before the start is a conservative baseline (at most
+    20 minutes earlier). Unobserved usage, long gaps, and unexplained decreases
+    are marked incomplete, rather than fabricating a precise total or a safe ETA.
+    """
+    stamp = now.timestamp()
+    end = min(stamp, box['end'])
+    provider, email, window = pool_parts(pool)
+    points = [dict(p) for p in history if p.get('provider', 'claude') == provider
+              and p['email'] == email and p['time'] <= end]
+    live = next((p for p in rows if p.get('provider', 'claude') == provider and p['email'] == email), None)
+    if live is not None and stamp <= box['end']:
+        points.append(dict(live, time=stamp))
+    # The just-appended log reading and live row describe the same observation.
+    points = sorted({p['time']: p for p in points}.values(), key=lambda p: p['time'])
+    prior = [p for p in points if p['time'] <= box['start'] and pool_points(p, window) is not None]
+    baseline = prior[-1] if prior and box['start'] - prior[-1]['time'] <= 1200 else None
+    relevant = [p for p in points if p['time'] >= box['start']]
+    if baseline is not None:
+        relevant = [baseline] + [p for p in relevant if p['time'] > baseline['time']]
+    valid = [p for p in relevant if pool_points(p, window) is not None]
+    result = dict(used=None, incomplete=True, eta=None,
+                  status='ended' if stamp >= box['end'] else 'active', rate=None)
+    if stamp < box['start']:
+        return dict(result, status='future')
+    if not valid:
+        return result
+    used, series = 0.0, []
+    incomplete = baseline is None
+    previous = valid[0]
+    series.append((max(previous['time'], box['start']), used))
+    for point in relevant:
+        if point['time'] <= previous['time']:
+            continue
+        value = pool_points(point, window)
+        if value is None:
+            incomplete = True
+            continue
+        old = pool_points(previous, window)
+        old_reset, reset = meter_reset(previous, window), meter_reset(point, window)
+        rollover = (old_reset is not None and reset is not None and reset != old_reset
+                    or old_reset is not None and previous['time'] < old_reset <= point['time'])
+        if rollover:
+            used += value
+            # Consumption between the last old sample and reset cannot be recovered.
+            incomplete = True
+        elif value < old - 1e-8:
+            incomplete = True
+        else:
+            used += max(0, value - old)
+        if (point['time'] - previous['time'] > 1500
+                and (old_reset is None or reset is None)):
+            incomplete = True
+        series.append((point['time'], used))
+        previous = point
+    if (end - previous['time'] > 1200 or live is None
+            or pool_points(live, window) is None):
+        incomplete = True
+    current_reset = meter_reset(previous, window)
+    stale = current_reset is not None and current_reset <= end
+    incomplete |= stale
+    rates = []
+    # Recent rates catch a surge; the box average catches sustained spend.
+    if (not stale and live is not None and pool_points(live, window) is not None
+            and end - previous['time'] <= 1200):
+        for seconds in (1800, 7200, end - box['start']):
+            recent = [p for p in series if p[0] >= end - seconds]
+            if recent and end - recent[0][0] >= 900:
+                rates.append((used - recent[0][1]) / (end - recent[0][0]))
+    rate = max(rates, default=0)
+    eta = stamp + max(0, box['allow'][pool] - used) / rate if rate > 0 else None
+    if eta is not None and eta >= box['end']:
+        eta = None
+    return dict(used=used, incomplete=incomplete, eta=eta, rate=rate,
+                status='ended' if stamp >= box['end'] else 'active')
+
+
+def box_line(box, pool, reading, now):
+    label = f'{pool_label(pool)} — “{box["name"]}”'
+    allowed, used = box['allow'][pool], reading['used']
+    if reading['status'] == 'future':
+        return f'{label}: starts in {duration(box["start"] - now.timestamp())}; {allowed:g} points allowed. Monitoring starts then.'
+    left = 'box ended' if reading['status'] == 'ended' else duration(box['end'] - now.timestamp()) + ' left'
+    if used is None:
+        if reading.get('uncapped'):
+            return f'{label}: usage unknown out of {allowed:g} points allowed; {left}.\nA human uncapped this box; it no longer blocks this pool.'
+        return f'{label}: usage unknown out of {allowed:g} points allowed; {left}. Check the meter; this box cannot be verified.'
+    qualifier = 'at least ' if reading['incomplete'] else ''
+    head = f'{label}: {qualifier}{used:.1f} of {allowed:g} points used; {left}.'
+    if reading.get('proposed'):
+        action = 'Proposed allowance; no stop is active until you approve it.'
+    elif reading.get('uncapped'):
+        action = 'A human uncapped this box; it no longer blocks this pool.'
+    elif used >= allowed - 1e-8:
+        action = 'Allowance reached: this pool stays blocked until a human uncaps it.'
+    elif reading['eta'] is not None:
+        action = f'At this rate it will exceed {allowed:g} at about {short_when(reading["eta"])}; slow down or raise the allowance.'
+    elif reading['incomplete']:
+        action = 'Readings are incomplete: this pool stays blocked until a human uncaps it.'
+    elif reading['status'] == 'ended':
+        action = 'Final reading; set another box for further use.'
+    else:
+        action = f'{max(0, allowed - used):.1f} points remain; next check within 10 minutes.'
+    return head + '\n' + action
+
+
+def read_state(path):
+    try:
+        state = json.loads(path.read_text())
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def deliver_events(events, now, path=None, discord_sender=None, desktop_sender=None):
+    """Independent receipts: a desktop popup never suppresses a failed DM retry."""
+    path = BOX_STATE if path is None else path
+    state = read_state(path)
+    senders = {'discord': send_direct if discord_sender is None else discord_sender,
+               'desktop': desktop_notify if desktop_sender is None else desktop_sender}
+    active = set()
+    emitted = []
+    for key, level, line, interval in events:
+        active.add(key)
+        previous = state.get(key, {})
+        if not isinstance(previous, dict):
+            previous = {}
+        sent = False
+        for channel, sender in senders.items():
+            receipt = previous.get(channel, {})
+            if not isinstance(receipt, dict):
+                receipt = {}
+            last = number(receipt.get('at'))
+            if (last is not None and now.timestamp() - last < interval
+                    and level <= (number(receipt.get('level')) or 0)):
+                continue
+            sent = True
+            if sender(line):
+                previous[channel] = dict(at=now.timestamp(), level=level)
+            else:
+                print(f'claude-usage: {channel} delivery failed; retry next check', file=sys.stderr)
+        state[key] = previous
+        if sent:
+            print(line)
+            emitted.append(line)
+    # If the risk clears and returns, warn again immediately.
+    state = {key: value for key, value in state.items() if key in active}
+    atomic_write(path, json.dumps(state, sort_keys=True) + '\n')
+    return emitted
+
+
+def box_events(rows, history, now, boxes, notice=None, released=()):
+    events = []
+    if notice:
+        events.append(('configuration', 1, notice, 21600))
+    if notice is None:
+        for box in boxes:
+            for pool in box['allow']:
+                if latch_id(box, pool) in released:
+                    continue
+                reading = box_reading(box, pool, rows, history, now)
+                if reading['status'] != 'active':
+                    continue
+                used, allowed = reading['used'], box['allow'][pool]
+                fraction = used / allowed if used is not None and allowed else (1 if used is not None else 0)
+                level = (4 if fraction >= 1 - 1e-10 else 3 if fraction >= .9 - 1e-10
+                         else 2 if fraction >= .75 - 1e-10 else 1 if fraction >= .5 - 1e-10 else 0)
+                if reading['incomplete'] or reading['eta'] is not None:
+                    level = max(level, 1)
+                if level:
+                    key = json.dumps([box['name'], box['start'], box['end'], pool, allowed])
+                    interval = 600 if level >= 3 else 1800 if level >= 2 or reading['eta'] is not None else 3600
+                    events.append((key, level, box_line(box, pool, reading, now), interval))
+    # Subscription caps are always checked, regardless of boxes, account status,
+    # the listed banked resets, mock/final files, or a config error.
+    for row in rows:
+        for window in ('5h', '7d', 'fable'):
+            value = pool_points(row, window)
+            if value is None or value < 90:
+                continue
+            pool = ':'.join((row.get('provider', 'claude'), row['email'],
+                             'fable' if window == 'fable' else '5h' if window == '5h'
+                             else 'all' if row.get('provider', 'claude') == 'claude' else 'week'))
+            label = pool_label(pool)
+            reset = meter_reset(row, window)
+            action = ('Wait for the ' + short_when(reset) + ' reset or use another pool.'
+                      if reset is not None and reset > now.timestamp()
+                      else 'The stored reading may be old; check the meter before retrying.')
+            if value >= 100:
+                events.append(('cap:' + pool, 4, f'{label}: OUT OF USAGE ({value:g}% on the meter).\n' + action, 1800))
+            else:
+                left = duration(reset - now.timestamp()) + ' until reset' if reset and reset > now.timestamp() else 'reset time unverified'
+                line = (f'{label}: {value:g} of 100 meter points used; {left}.\n'
+                        f'Only {100 - value:g} points remain; slow down or use another pool.')
+                events.append(('cap:' + pool, 3 if value >= 95 else 2, line, 1800 if value >= 95 else 3600))
+    return events
+
+
+@contextmanager
+def guard_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(str(path) + '.lock', 'a') as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def guard_state(path):
+    try:
+        state = json.loads(path.read_text())
+    except FileNotFoundError:
+        return dict(latches={}, released=[], files={})
+    if (not isinstance(state, dict) or not isinstance(state.get('latches'), dict)
+            or not isinstance(state.get('released'), list) or not isinstance(state.get('files'), dict)):
+        raise ValueError('invalid hard-stop state')
+    return state
+
+
+def latch_id(box, pool):
+    identity = json.dumps([box['name'], box['start'], box['end'], pool])
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def auth_rules(data):
+    rules = data.get('excluded_models', data.get('excluded-models', []))
+    if isinstance(rules, str):
+        rules = [r.strip() for r in rules.split(',') if r.strip()]
+    if not isinstance(rules, list) or any(not isinstance(r, str) for r in rules):
+        raise ValueError('invalid existing model exclusions')
+    return list(rules)
+
+
+def update_auth_guard(path, pools, state, state_path):
+    """Edit only the proxy's supported local controls; never store or print tokens.
+
+    Proxy source: internal/watcher/synthesizer/file.go (disabled/excluded_models),
+    sdk/cliproxy/service_models.go (case-insensitive '*' and disabled registration).
+    The proxy watches these files. No restart or management write request is used.
+    """
+    data = json.loads(path.read_text())
+    identity = str(path)
+    owned = state['files'].get(identity)
+    all_models = any(pool.split(':')[2] not in ('fable', 'non-fable') for pool in pools)
+    fable = any(pool.split(':')[2] == 'fable' for pool in pools)
+    non_fable = any(pool.split(':')[2] == 'non-fable' for pool in pools)
+    if pools and owned is None:
+        owned = dict(disabled_present='disabled' in data, disabled=data.get('disabled', False),
+                     disabled_owned=False, fable_owned=False,
+                     exclusions_present='excluded_models' in data)
+        state['files'][identity] = owned
+    if owned is None:
+        return False
+    original_owned = dict(owned)
+    owned = dict(owned)
+    before = dict(data)
+    if all_models:
+        data['disabled'] = True
+        owned['disabled_owned'] = True
+    elif owned['disabled_owned']:
+        if owned['disabled_present']:
+            data['disabled'] = owned['disabled']
+        else:
+            data.pop('disabled', None)
+        owned['disabled_owned'] = False
+    if fable:
+        # A per-account exclusion overrides global exclusions. If the global
+        # config has any, conservatively stop the whole account rather than
+        # inadvertently reopening other excluded models. Never parse secrets.
+        config = path.parent.parent / 'config.yaml'
+        inherited = config.exists() and any(line.strip().startswith('oauth-excluded-models:')
+                                           for line in config.read_text().splitlines())
+        if inherited:
+            data['disabled'] = True
+            owned['disabled_owned'] = True
+        else:
+            rules = auth_rules(data)
+            if '*fable*' not in rules:
+                data['excluded_models'] = rules + ['*fable*']
+                owned['fable_owned'] = True
+    elif owned['fable_owned']:
+        rules = [r for r in auth_rules(data) if r != '*fable*']
+        if not owned['exclusions_present'] and rules == auth_rules({
+                'excluded_models': data.get('excluded-models', [])}):
+            data.pop('excluded_models', None)
+        else:
+            data['excluded_models'] = rules
+        owned['fable_owned'] = False
+    # All currently registered non-Fable Claude families; aliases are filtered
+    # after native model registration by CLIProxyAPI. Preserve pre-existing rules.
+    held = owned.get('non_fable_owned', [])
+    if non_fable:
+        rules = auth_rules(data)
+        # Per-account exclusions supersede global ones. Copy the inherited
+        # Claude rules before adding our controls, so another model never opens.
+        config = path.parent.parent / 'config.yaml'
+        if not rules and config.exists() and any(line.strip().startswith('oauth-excluded-models:')
+                                                for line in config.read_text().splitlines()):
+            import yaml  # already installed; used only for this optional config
+            global_rules = ((yaml.safe_load(config.read_text()) or {}).get('oauth-excluded-models') or {}).get('claude', [])
+            if not isinstance(global_rules, list) or any(not isinstance(r, str) for r in global_rules):
+                raise ValueError('invalid inherited Claude model exclusions')
+            rules = list(global_rules)
+            owned['inherited_owned'] = list(global_rules)
+        added = [rule for rule in ('*opus*', '*sonnet*', '*haiku*') if rule not in rules]
+        if added or rules != auth_rules(data):
+            data['excluded_models'] = rules + added
+        owned['non_fable_owned'] = sorted(set(held + added))
+    elif held:
+        rules = [rule for rule in auth_rules(data) if rule not in held]
+        if not owned['exclusions_present'] and rules == auth_rules({'excluded_models': data.get('excluded-models', [])}):
+            data.pop('excluded_models', None)
+        else:
+            data['excluded_models'] = rules
+        owned['non_fable_owned'] = []
+    if not non_fable and not fable and owned.get('inherited_owned'):
+        rules = [rule for rule in auth_rules(data) if rule not in owned['inherited_owned']]
+        if not owned['exclusions_present'] and not rules:
+            data.pop('excluded_models', None)
+        else:
+            data['excluded_models'] = rules
+        owned['inherited_owned'] = []
+    if data != before:
+        # Record acquisition before editing credentials, and record release only
+        # after. A crash at either boundary can be retried without stranding a lock.
+        pending_owned = dict(owned)
+        for flag in ('disabled_owned', 'fable_owned'):
+            pending_owned[flag] = owned[flag] or original_owned[flag]
+        pending_owned['non_fable_owned'] = sorted(set(owned.get('non_fable_owned', []) + original_owned.get('non_fable_owned', [])))
+        pending_owned['inherited_owned'] = sorted(set(owned.get('inherited_owned', []) + original_owned.get('inherited_owned', [])))
+        state['files'][identity] = pending_owned
+        atomic_write(state_path, json.dumps(state, sort_keys=True) + '\n')
+        atomic_write(path, json.dumps(data, indent=2) + '\n')
+    state['files'][identity] = owned
+    if not pools:
+        state['files'].pop(identity, None)
+    return data != before
+
+
+SPEECH_TEXT = HOME / '.local/state/claude-usage/over-cap-speech.txt'
+SPEECH_PID = HOME / '.local/state/claude-usage/over-cap-speech.pid'
+SPEECH_PY = HOME / '.local/share/claude-usage/tts/venv/bin/python'
+SPEAKER = HOME / '.local/bin/usage_speaker.py'
+SPOKEN = {'fable': 'Fable', 'non-fable': 'Opus', 'codex': 'Codex'}
+PROC = Path('/proc')
+
+
+def speech_phrase(latches):
+    """'5 minute, 300 percent, Opus' for each over-cap box, once per category and box."""
+    seen, parts = set(), []
+    for latch in latches.values():
+        category, box = latch.get('category'), str(latch.get('box') or 'usage box')
+        if category is None:
+            # Per-pool box latches carry no category: name the pool's meter, never "all models" for Fable.
+            try:
+                provider, _, window = pool_parts(latch['pool'])
+                category = 'codex' if provider == 'codex' else window if window in SPOKEN else None
+            except (KeyError, ValueError, AttributeError):
+                pass
+        if (category, box) in seen:
+            continue
+        seen.add((category, box))
+        used = latch.get('used_now', latch.get('used'))
+        allowed = latch.get('allowed')
+        if latch.get('reason') == 'readings incomplete':
+            percent = 'readings incomplete'  # its used figure is only a lower bound, never a percent
+        else:
+            try:
+                if latch.get('planned'):  # rate stop: percent of planned rate, e.g. 300 at a 3x stop
+                    used, allowed = float(used) - float(latch.get('soft_credit') or 0), latch['planned']
+                percent = f'{round(100 * float(used) / float(allowed))} percent'
+            except (TypeError, ValueError, ZeroDivisionError):
+                percent = 'over the cap'
+        window = re.sub(r'^(?:.*: )?(\d+)-minute rate$', r'\1 minute', box)
+        parts.append(f"{window}, {percent}, {SPOKEN.get(category, category or 'all models')}.")
+    return ' '.join(parts)
+
+
+def speaker_pid():
+    """The running over-cap speaker's PID, or None.
+
+    The PID file outlives reboots and crashes, and its number can be reused by any process:
+    trust it only while that PID is still our speaker reading our phrase file.
+    """
+    try:
+        pid = int(SPEECH_PID.read_text().strip())
+        argv = (PROC / str(pid) / 'cmdline').read_bytes().split(b'\0')
+    except (OSError, ValueError):
+        return None
+    return pid if str(SPEAKER).encode() in argv and str(SPEECH_TEXT).encode() in argv else None
+
+
+def stop_music():
+    SPEECH_TEXT.unlink(missing_ok=True)
+    pid = speaker_pid()
+    if pid is not None:
+        try:
+            os.killpg(pid, 15)
+        except OSError:
+            pass
+    SPEECH_PID.unlink(missing_ok=True)
+
+
+def play_music(phrase='Usage accounting could not be verified.'):
+    """No hard stops: where a stop would fire, a voice reads out each over-cap box on repeat."""
+    SPEECH_TEXT.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    SPEECH_TEXT.write_text(phrase + '\n')  # the running speaker picks up changes
+    if speaker_pid() is not None:
+        return  # already speaking
+    env = dict(os.environ)
+    env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+    python = str(SPEECH_PY) if SPEECH_PY.exists() else '/usr/bin/python3'
+    try:
+        proc = subprocess.Popen([python, str(SPEAKER), str(SPEECH_TEXT)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True, env=env)
+        SPEECH_PID.write_text(f'{proc.pid}\n')
+    except OSError:
+        pass
+
+
+def say_once(phrase):
+    """Speak one reminder (decile crossings); never loops."""
+    env = dict(os.environ)
+    env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+    python = str(SPEECH_PY) if SPEECH_PY.exists() else '/usr/bin/python3'
+    try:
+        subprocess.Popen([python, str(SPEAKER), '--once', phrase], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+    except OSError:
+        pass
+
+
+def apply_hard_stops(state, path, auth_dirs=None):
+    auth_dirs = AUTH_DIRS if auth_dirs is None else auth_dirs
+    # No hard stops: a latch plays music instead of blocking any model or account.
+    # Pass no pools below, so files this tool edited earlier are restored.
+    if state['latches']:
+        play_music(speech_phrase(state['latches']))
+    else:
+        stop_music()
+    blocked = set()
+    categories = set()
+    if not blocked and not state['files']:
+        return
+    found = set()
+    for provider, root in auth_dirs.items():
+        for auth in root.glob('*.json'):
+            data = json.loads(auth.read_text())
+            email = data.get('email')
+            pools = {pool for pool in blocked if pool_parts(pool)[:2] == (provider, email)}
+            # A latched category also covers accounts added after the trip.
+            # Source weights decide accounting, never a route around a stop.
+            for category in categories:
+                if category and (provider == 'codex') == (category == 'codex'):
+                    pools.add(':'.join((provider, email, 'week' if category == 'codex' else category)))
+            found.update(pools)
+            if pools or str(auth) in state['files']:
+                # Save ownership before changing the file, so an interrupted write
+                # is recoverable without backing up or reverting access tokens.
+                if pools and str(auth) not in state['files']:
+                    state['files'][str(auth)] = dict(
+                        disabled_present='disabled' in data, disabled=data.get('disabled', False),
+                        disabled_owned=False, fable_owned=False,
+                        exclusions_present='excluded_models' in data)
+                atomic_write(path, json.dumps(state, sort_keys=True) + '\n')
+                update_auth_guard(auth, pools, state, path)
+                atomic_write(path, json.dumps(state, sort_keys=True) + '\n')
+    missing = blocked - found
+    if missing:
+        raise ValueError('a blocked account has no local auth file')
+    # Optional fixed CATEGORY transport; proxy enforcement never depends on it.
+    # No hard stops: the CATEGORY stop publisher is no longer called.
+
+
+def enforce_boxes(boxes, rows, history, now, notice=None, path=None, auth_dirs=None):
+    """Latch cap hits and unreadable accounting; never release automatically."""
+    path = GUARD_STATE if path is None else path
+    events = []
+    with guard_lock(path):
+        state = guard_state(path)
+        if notice is None:
+            for box in boxes:
+                for pool in box['allow']:
+                    reading = box_reading(box, pool, rows, history, now)
+                    key = latch_id(box, pool)
+                    if reading['status'] == 'future' or key in state['released']:
+                        continue
+                    if (reading['incomplete'] or reading['used'] >= box['allow'][pool] - 1e-8):
+                        state['latches'].setdefault(key, dict(pool=pool, box=box['name'],
+                            reason='readings incomplete' if reading['incomplete'] else 'allowance reached',
+                            used=reading['used'], allowed=box['allow'][pool], end=box['end'], at=now.timestamp()))
+        # The latch is durable before any credential changes, and survives config
+        # edits, box end, proxy restarts and meter resets.
+        atomic_write(path, json.dumps(state, sort_keys=True) + '\n')
+        apply_hard_stops(state, path, auth_dirs)
+        for key, item in state['latches'].items():
+            used = 'usage unknown' if item['used'] is None else f'at least {item["used"]:.1f} points used'
+            left = duration(item['end'] - now.timestamp()) + ' left' if item['end'] > now.timestamp() else 'period ended'
+            line = (f'{pool_label(item["pool"])} — “{item["box"]}”: {used} of {item["allowed"]:g} allowed; {left}.\n'
+                    f'BLOCKED ({item["reason"]}); only a human uncap in a terminal will reopen it.')
+            events.append(('blocked:' + key, 4, line, 1800))
+    return events
+
+
+def uncap_pool(pool, path=None, auth_dirs=None, confirmer=None):
+    """Human-only operational command. Agents must never run it without the user's request."""
+    path = GUARD_STATE if path is None else path
+    def confirm(label):
+        # Read the controlling terminal, never piped stdin. A daemon cannot uncap.
+        try:
+            with open('/dev/tty', 'r') as reader, open('/dev/tty', 'w') as writer:
+                writer.write(f'Uncap {label} for the rest of its blocked boxes? Type UNCAP: ')
+                writer.flush()
+                return reader.readline().strip() == 'UNCAP'
+        except OSError:
+            return False
+    confirmer = confirm if confirmer is None else confirmer
+    if not confirmer(pool):
+        return False
+    with guard_lock(path):
+        state = guard_state(path)
+        keys = [key for key, item in state['latches'].items() if item['pool'] == pool]
+        if not keys:
+            return False
+        for key in keys:
+            state['latches'].pop(key)
+            if key not in state['released']:
+                state['released'].append(key)
+        atomic_write(path, json.dumps(state, sort_keys=True) + '\n')
+        apply_hard_stops(state, path, auth_dirs)
+    return True
+
+
+def main(argv=None, clock=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--log', action='store_true')
+    parser.add_argument('--warn', action='store_true', help='log usage and warn on box spend, projected overruns and subscription caps')
+    parser.add_argument('--boxes', type=Path, nargs='?', const=BOXES, default=BOXES, help='show box policy, or read the specified TOML file')
+    parser.add_argument('--accept-defaults', action='store_true', help='approve the proposed allowances in the boxes file')
+    parser.add_argument('--hard-continue', action='store_true', help='human confirmation to release all stops and suspend enforcement')
+    parser.add_argument('--un-hard-continue', nargs='?', const='all', choices=('all', 'fable', 'non-fable', 'codex'), help='resume all or one category cap with fresh windows')
+    parser.add_argument('--soft-uncap', nargs=2, metavar=('CATEGORY', 'MINUTES'), help='human SOFT confirmation to add fixed points credit; retain counted spending')
+    parser.add_argument('--uncap', metavar='POOL', help='human terminal confirmation to reopen a blocked pool')
+    parser.add_argument('--passive', action='store_true', help='read local session usage only; no proxy requests')
+    parser.add_argument('--meter-check', action='store_true', help='check cached local meters without adding a TSV log reading')
+    parser.add_argument('--compute-check', action='store_true', help='refresh non-LLM cloud costs and reminders using provider CLIs only')
+    parser.add_argument('--test-box', type=Path, help='explicit historical non-Fable test box TOML; human release required')
+    args = parser.parse_args(argv)
+    host = SimpleNamespace(**globals())
+    try:
+        import outside_api_budget
+        if args.warn:
+            outside_api_budget.check_and_notify()
+    except Exception:
+        pass  # The independent pre-call guard still refuses unreadable state.
+    import claude_usage_compute as compute
+    if args.compute_check:
+        now = clock() if clock else datetime.now().astimezone(ET)
+        try:
+            print(compute.refresh(host, now.timestamp()))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError):
+            print('Compute total could not be refreshed; existing usage stops are unchanged.', file=sys.stderr)
+            return 1
+    if not any((args.log, args.warn, args.passive, args.meter_check, args.uncap, args.soft_uncap,
+                args.hard_continue, args.un_hard_continue, args.test_box, args.accept_defaults)):
+        print(compute.cached(host))
+        try:
+            print(outside_api_budget.cached_line())
+        except (NameError, AttributeError):
+            print('Outside API: guard unavailable; live calls refused.')
+    try:
+        category_config = tomllib.loads(args.boxes.read_text()).get('version') == 2
+    except (OSError, ValueError):
+        category_config = False
+    if category_config or (LOG.parent / 'category-ledger.json').exists() or args.passive or args.meter_check or args.test_box or args.hard_continue or args.un_hard_continue or args.soft_uncap:
+        spec = importlib.util.spec_from_file_location('claude_usage_boxes', Path(__file__).with_name('claude_usage_boxes.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.cli(SimpleNamespace(**globals()), args, clock)
+    if args.uncap:
+        try:
+            ok = uncap_pool(args.uncap)
+        except (OSError, ValueError, KeyError):
+            ok = False
+        print('Pool uncapped.' if ok else 'No pool uncapped; a human must confirm in a terminal.')
+        return 0 if ok else 2
+    boxes, notice = read_boxes(args.boxes)
+    if args.accept_defaults:
+        if not boxes or notice is None or 'Proposed boxes only' not in notice:
+            print('claude-usage: no valid proposed boxes to approve', file=sys.stderr)
+            return 2
+        atomic_write(args.boxes, args.boxes.read_text().replace('approved = false', 'approved = true', 1))
+        boxes, notice = read_boxes(args.boxes)
+        if notice:
+            print('claude-usage: approval failed; edit approved = true in the boxes file', file=sys.stderr)
+            return 2
+    rows, problems = [], []
+    for name, getter in (('claude', lambda: parse(fetch())),
+                         ('codex', lambda: parse_codex(fetch(CODEX_URL, CODEX_KEY)))):
+        try:
+            rows += getter()
+        except (OSError, ValueError):
+            problems.append(name)
+    for name in problems:
+        print(f'claude-usage: {name} proxy unavailable', file=sys.stderr)
+    now = clock() if clock is not None else datetime.now(ET)
+    if args.log or args.warn:
+        prepare_log()
+        with open(LOG, 'a') as out:
+            out.write(tsv(rows, now))
+    history = read_log(LOG)
+    guard_failed = False
+    if args.warn:
+        events = []
+        try:
+            events += enforce_boxes(boxes, rows, history, now, notice)
+            guard = guard_state(GUARD_STATE)
+            released = guard['released'] + list(guard['latches'])
+            events += box_events(rows, history, now, boxes, notice, released)
+        except (OSError, ValueError, KeyError, TypeError):
+            guard_failed = True
+            # Enforcement failure must not silently permit unbounded spending.
+            # Stop services rather than making a forbidden management write call.
+            # No hard stops: play music instead of stopping the proxies.
+            play_music()
+            events.append(('guard-failed', 4, 'Usage accounting could not be verified; music is playing, nothing was stopped.\n'
+                           'Check the local usage guard.', 600))
+        for name in problems:
+            events.append(('proxy:' + name, 3, f'{name.title()} usage cannot be read.\nCheck the local proxy; its boxes cannot be verified.', 1800))
+        deliver_events(events, now)
+        modal_check(now, thread_sender=send_direct)
+    elif not args.log:
+        if notice:
+            print(notice)
+        try:
+            guard = guard_state(GUARD_STATE)
+        except (OSError, ValueError):
+            guard = dict(latches={}, released=[])
+            print('Hard-stop status cannot be read. Check the guard before spending more.')
+        for box in current_boxes(boxes, now):
+            if 'series' in box:
+                print(f'{box["series"]}: allowances renew hourly through {when(box["schedule_end"])}; existing hard stops remain locked.')
+            for pool in box['allow']:
+                reading = box_reading(box, pool, rows, history, now)
+                reading['uncapped'] = latch_id(box, pool) in guard['released']
+                reading['proposed'] = notice is not None
+                print(box_line(box, pool, reading, now))
+        for item in guard['latches'].values():
+            print(f'{pool_label(item["pool"])}: BLOCKED until a human uncaps it ({item["box"]}).')
+        for row in rows:
+            for window in ('7d', 'fable', '5h'):
+                value = pool_points(row, window)
+                if value is not None:
+                    name = 'Fable' if window == 'fable' else 'weekly' if window == '7d' else '5-hour'
+                    print(f'{row.get("provider", "claude").title()} {row["email"]} {name} meter: {value:g}% used; resets {when(meter_reset(row, window))}.')
+        try:
+            print(render_modal(fetch_modal()))
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            print('Modal: unavailable')
+    return 1 if problems or guard_failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

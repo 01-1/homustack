@@ -1,0 +1,7 @@
+[Unit]
+Description=Passive five-minute category usage-rate alerts (no provider requests)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/claude-usage --passive
+UMask=0077

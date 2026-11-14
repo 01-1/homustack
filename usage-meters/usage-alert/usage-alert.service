@@ -1,0 +1,15 @@
+[Unit]
+Description=Passive CLIProxyAPI usage cap desktop alerts
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I %h/.local/lib/usage-alert/usage-alert.sh
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# Optional: Environment="USAGE_ALERT_MIRROR=/path/to/relay --producer usage"
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
