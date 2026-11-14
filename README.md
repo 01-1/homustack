@@ -1,4 +1,4 @@
-# agent-tools
+# homustack
 
 Rules, skills and small tools for running many coding agents at once, mostly Claude Code and Codex inside [T3 Code](https://github.com/pingdotgg/t3code). Built while running dozens of agents on one project. Each folder stands alone; its own README has the details. Everything needs Python 3 (standard library only) and runs on Linux; the T3 helpers need the `t3` CLI with T3 Code running.
 
@@ -24,7 +24,7 @@ Rules, skills and small tools for running many coding agents at once, mostly Cla
 
 ## Install
 
-Clone the repo anywhere, then follow the install line of each folder you want. Nothing installs itself.
+Clone the repo anywhere, then follow the install line of each folder you want. Nothing installs itself. Alternatively, ask your LLM to install the parts you want.
 
 ## License
 
