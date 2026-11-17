@@ -1,5 +1,8 @@
 # homustack
 
+This readme may be out of date.
+Also see: https://git.meowc.at/vi/config (Contains global AGENTS.md/CLAUDE.md files, among other things.)
+
 Rules, skills and small tools for running many coding agents at once, mostly Claude Code and Codex inside [T3 Code](https://github.com/pingdotgg/t3code). Built while running dozens of agents on one project. Each folder stands alone; its own README has the details. Everything needs Python 3 (standard library only) and runs on Linux; the T3 helpers need the `t3` CLI with T3 Code running.
 
 `slop/` holds rougher, less-tested extras that I do not recommend using.
@@ -15,8 +18,6 @@ Rules, skills and small tools for running many coding agents at once, mostly Cla
 **`spawn-cap/`**: a PreToolUse hook for Claude Code and Codex that blocks a spawn or wake when more than a set number of agents (10 by default) would be running at once under one thread, plus `spawn-cap tree`, the parent-child tree of who started whom (read from T3's database). Fails open. Status: a close variant is in daily use; this copy's tests pass. Tests: `cd spawn-cap && python3 test_spawn_cap.py`. Install: see `spawn-cap/README.md` for the hook entries.
 
 **`usage-meters/`**: meters and alerts for Claude and Codex subscription usage served through [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) proxies. `usage-alert` pops up when every account has hit a cap; `claude-usage` is the meter with usage boxes and rate ladders per category; `usage-dashboard` is a local page; `pace` starts a helper for a long-running T3 thread when usage allows. Status: usage-alert and the dashboard worked in use; `claude-usage` works but is tied to one setup (see its Limits section); `pace` was never switched on. Tests: in each subfolder, for example `cd usage-meters/claude-usage && HOME=$(mktemp -d) python3 -B -m unittest test_boxes` (one file at a time, or `discover -p 'test_*.py'` for all 557). Install: see `usage-meters/README.md`.
-
-**`AGENTS.md`**: a general rule file for coding agents (reading the human, doing the work, asking first, accuracy, subagents and models, messaging agents in T3 Code, helper scripts, replies). Status: the rules were used, the file as a whole was not. No tests. Install: copy `AGENTS.md` into a project and add `@AGENTS.md` to its `CLAUDE.md` (Claude Code reads `CLAUDE.md`, not `AGENTS.md`), or copy it to `~/.claude/CLAUDE.md` for every project. It names seven skills: stop-all-threads from `agent-skills/` and six from `slop/slop-skills/` (intent-reviewer, record-standing-rule, draft-for-review, live-system-change, encrypted-backup, ping-owning-thread); install those too. Check one rule before use: it starts T3 Code subagents with `delegate_task`, while T3 Code's own guidance prefers the native subagent tool when the child uses the same provider and settings.
 
 **`effort-and-prompt-cache.md`**: what changing a running thread's model or effort does to the prompt cache, measured for Claude and Codex. Status: reference. No tests.
 
