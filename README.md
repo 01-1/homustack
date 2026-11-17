@@ -18,7 +18,9 @@ Rules, skills and small tools for running many coding agents at once, mostly Cla
 
 **`AGENTS.md`**: a general rule file for coding agents (reading the human, doing the work, asking first, accuracy, subagents and models, messaging agents in T3 Code, helper scripts, replies). Status: the rules were used, the file as a whole was not. No tests. Install: copy `AGENTS.md` into a project and add `@AGENTS.md` to its `CLAUDE.md` (Claude Code reads `CLAUDE.md`, not `AGENTS.md`), or copy it to `~/.claude/CLAUDE.md` for every project. It names seven skills: stop-all-threads from `agent-skills/` and six from `slop/slop-skills/` (intent-reviewer, record-standing-rule, draft-for-review, live-system-change, encrypted-backup, ping-owning-thread); install those too. Check one rule before use: it starts T3 Code subagents with `delegate_task`, while T3 Code's own guidance prefers the native subagent tool when the child uses the same provider and settings.
 
-**`slop/LESSONS.md`** and **`slop/memories/`**: 19 lessons from the multi-agent project, and three example Claude Code memories. Status: reference. No tests. Install: see `slop/README.md` for the memories.
+**`effort-and-prompt-cache.md`**: what changing a running thread's model or effort does to the prompt cache, measured for Claude and Codex. Status: reference. No tests.
+
+**`slop/LESSONS.md`** and **`slop/memories/`**: 18 lessons from the multi-agent project, and three example Claude Code memories. Status: reference. No tests. Install: see `slop/README.md` for the memories.
 
 **`slop/slop-skills/`**: twelve more skills: intent-reviewer, record-standing-rule, coordinator-handoff, draft-for-review, now-list, live-system-change, research-digest, dual-agent, babysit, making-faster, ping-owning-thread and encrypted-backup. Several skills in `agent-skills/` point at four of these (record-standing-rule, coordinator-handoff, live-system-change, dual-agent). Status: rewritten from project-specific versions, lightly used. No tests. Install as for `agent-skills/`. dual-agent derives from a tstack skill; keep its `LICENSE-tstack`.
 
