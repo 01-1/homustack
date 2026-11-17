@@ -6,7 +6,7 @@ Rules, skills and small tools for running many coding agents at once, mostly Cla
 
 ## Folders
 
-**`agent-skills/`**: six Claude Code skills. review-loop and review-roll have a fresh reviewer check a change in bounded rounds (before or after it ships); retire-role splits a role across several owners; ai-debate runs a debate between models; stop-all-threads and settle-all-threads stop or settle every thread in T3 projects. Status: used in practice; review-loop most. No tests (they are instructions). Install by copying the folders into `~/.claude/skills/` (see `agent-skills/README.md`). review-loop and review-roll derive from MIT-licensed tstack skills; keep `LICENSE-tstack` with them.
+**`agent-skills/`**: seven Claude Code skills. review-loop and review-roll have a fresh reviewer check a change in bounded rounds (before or after it ships); retire-role splits a role across several owners; ai-debate runs a debate between models; stop-all-threads and settle-all-threads stop or settle every thread in T3 projects; og-sol-loop is tstack's sol-loop as published. Status: used in practice; review-loop most. No tests (they are instructions). Install by copying the folders into `~/.claude/skills/` (see `agent-skills/README.md`). review-loop and review-roll derive from MIT-licensed tstack skills and og-sol-loop is one; keep `LICENSE-tstack` with them.
 
 **`helper-daemons/`**: `RULES.md`, the rules for small long-running scripts that message agent threads (one lock, atomic state saved after a send, retries, logging, a restart loop, `--dry-run`), and `t3helper.py`, a library that implements them, with an example inbox relay. Status: working, tested offline only against a fake `t3`. Tests: `cd helper-daemons && python3 test_t3helper.py`.
 
@@ -32,4 +32,4 @@ Clone the repo anywhere, then follow the install line of each folder you want. N
 
 ## License
 
-No license. tstack's MIT notice stays with the skills derived from it (`LICENSE-tstack` in `agent-skills/review-loop`, `agent-skills/review-roll` and `slop/slop-skills/dual-agent`).
+No license. tstack's MIT notice stays with the skills derived from it (`LICENSE-tstack` in `agent-skills/review-loop`, `agent-skills/review-roll`, `agent-skills/og-sol-loop` and `slop/slop-skills/dual-agent`).
