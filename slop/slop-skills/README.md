@@ -31,7 +31,7 @@ The main skills (review-loop, review-roll, retire-role, ai-debate, stop-all-thre
 
 A skill is a folder with a `SKILL.md`. Claude Code loads user-level skills from `~/.claude/skills/<name>/SKILL.md` and project skills from `<project>/.claude/skills/<name>/SKILL.md`. Copy whole folders (keep `LICENSE-tstack` with dual-agent; it derives from an MIT-licensed tstack skill).
 
-The skills point at each other by name, so install them together: research-digest uses record-standing-rule; coordinator-handoff points at retire-role, and dual-agent and babysit at review-loop (both in `../../agent-skills`); babysit hands PRs to the user-level babysit-pr; making-faster points at ping-owning-thread in T3 Code. Several skills in `../../agent-skills` point at record-standing-rule, coordinator-handoff, live-system-change and dual-agent here. intent-reviewer is also what the rule file `../../AGENTS.md` tells agents to run.
+The skills point at each other by name, so install them together: research-digest uses record-standing-rule; coordinator-handoff points at retire-role, and dual-agent and babysit at review-loop (both in `../../agent-skills`); babysit hands PRs to the user-level babysit-pr; making-faster points at ping-owning-thread in T3 Code. Several skills in `../../agent-skills` point at record-standing-rule, coordinator-handoff, live-system-change and dual-agent here.
 
 T3 Code only: ping-owning-thread and babysit's autoreviewer brief. dual-agent prefers T3's `delegate_task` but falls back to the harness's own subagent tool.
 

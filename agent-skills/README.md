@@ -20,7 +20,7 @@ review-loop is tstack's `sol-loop` (`skills/sol-loop/SKILL.md` in t3dotgg/tstack
 
 Some of these name skills that live in `../slop/slop-skills`: retire-role uses record-standing-rule and points at coordinator-handoff; review-roll hands live releases to live-system-change; review-loop and ai-debate point at dual-agent. Install those too if you want the pointers to lead somewhere. stop-all-threads and settle-all-threads point at each other.
 
-T3 Code only: stop-all-threads and settle-all-threads (a script's T3 token can't interrupt or settle threads, so they run from an agent's own T3 tools). review-loop, review-roll and ai-debate prefer T3's `delegate_task` but fall back to the harness's own subagent tool.
+T3 Code only: stop-all-threads and settle-all-threads (a script's T3 token can't interrupt or settle threads, so they run from an agent's own T3 tools). review-loop and review-roll use T3's `delegate_task` in T3 Code, and native subagents outside T3. ai-debate uses `delegate_task` in T3 Code.
 
 ## Install
 
