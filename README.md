@@ -8,7 +8,7 @@ Rules, skills and small tools for running many coding agents at once, mostly Cla
 
 ## Folders
 
-**`agent-skills/`** contains skills for reviewing changes, retiring roles, running model debates, and stopping or settling T3 threads. See the [skill list and install steps](agent-skills/README.md).
+**`agent-skills/`** contains skills for reviewing changes, retiring roles, running model debates, and stopping or settling T3 threads. It also includes `babysit-self`, which schedules the owning T3 thread to carry out follow-ups. See the [skill list and install steps](agent-skills/README.md).
 
 **`helper-daemons/`** contains rules for scripts that message agent threads, a Python library that implements them, and an example inbox relay.
 

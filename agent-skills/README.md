@@ -1,11 +1,12 @@
 # Agent skills
 
-Seven working-practice skills for running coding agents, mostly in T3 Code with Claude. They name no roles, people, project paths or dates; each reads the project's own `AGENTS.md` and role files for anything project-specific. Rougher, less-tested skills are in `../slop/slop-skills`.
+Eight working-practice skills for running coding agents, mostly in T3 Code with Claude. They name no roles, people, project paths or dates; each reads the project's own `AGENTS.md` and role files for anything project-specific. Rougher, less-tested skills are in `../slop/slop-skills`.
 
 Where a skill uses a reviewer or a debater, the default is a fresh agent that didn't write the work. review-loop and review-roll default to a fresh Sol reviewer, and any model the human names replaces it. ai-debate uses Claude models unless the human names another provider. Model IDs are never hardcoded: in T3 Code the skills resolve the latest versions with `orchestrator_capabilities`.
 
 | Skill | What it does |
 |---|---|
+| babysit-self | Sets a recurring T3 wake in the owning thread to execute authorized follow-ups and disable itself when the goal is complete. |
 | review-loop | A fresh reviewer (Sol by default; any model the user names, as in "sol loop", "opus loop") checks a change in bounded rounds until agreement. Works on PRs, local commits, uncommitted work and files outside git. |
 | review-roll | Publishes first, then a fresh background reviewer (Sol by default) checks a snapshot, and its fixes go out as follow-up releases. |
 | retire-role | Splits a role across at least two owners, none taking more than 50% of its load, then retires it. |
@@ -20,7 +21,7 @@ Keep the `LICENSE-tstack` file with each copy of review-loop, review-roll, and o
 
 Some of these name skills that live in `../slop/slop-skills`: retire-role uses record-standing-rule and points at coordinator-handoff; review-roll hands live releases to live-system-change; review-loop and ai-debate point at dual-agent. Install those too if you want the pointers to lead somewhere. stop-all-threads and settle-all-threads point at each other.
 
-T3 Code only: stop-all-threads and settle-all-threads (a script's T3 token can't interrupt or settle threads, so they run from an agent's own T3 tools). review-loop and review-roll use T3's `delegate_task` in T3 Code, and native subagents outside T3. ai-debate uses `delegate_task` in T3 Code.
+babysit-self, stop-all-threads, and settle-all-threads require T3 Code. The stop and settle skills run from an agent's T3 tools because a script's T3 token can't interrupt or settle threads. review-loop and review-roll use T3's `delegate_task` in T3 Code, and native subagents outside T3. ai-debate uses `delegate_task` in T3 Code.
 
 ## Install
 
@@ -28,7 +29,7 @@ A skill is a folder with a `SKILL.md`. Claude Code loads user-level skills from 
 
 ```bash
 mkdir -p ~/.claude/skills
-cp -rn review-loop review-roll retire-role ai-debate stop-all-threads settle-all-threads og-sol-loop ~/.claude/skills/
+cp -rn babysit-self review-loop review-roll retire-role ai-debate stop-all-threads settle-all-threads og-sol-loop ~/.claude/skills/
 # the skills they point at, from slop/
 cp -rn ../slop/slop-skills/{record-standing-rule,coordinator-handoff,live-system-change,dual-agent} ~/.claude/skills/
 ```
