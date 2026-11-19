@@ -14,7 +14,7 @@ Where a skill uses a reviewer or a debater, the default is a fresh agent that di
 | settle-all-threads | Settles every thread in the named T3 projects without interrupting anything. |
 | og-sol-loop | tstack's `sol-loop` as published, triggered by "og sol loop", for comparing against review-loop. |
 
-review-loop is tstack's `sol-loop` (`skills/sol-loop/SKILL.md` in t3dotgg/tstack) in its own wording, generalised from pull requests to any change and with Sol as the default rather than the only reviewer. review-roll is review-loop's wording with publish-first steps. og-sol-loop is tstack's `sol-loop` unchanged except for the frontmatter `name` and `description`. All three keep tstack's MIT notice in their `LICENSE-tstack`; keep that file with them when you copy them. If you have a user-level `sol-loop` skill, review-loop replaces it: move sol-loop out of `~/.claude/skills` (don't delete it) and point any skills that name it at review-loop.
+Keep the `LICENSE-tstack` file with each copy of review-loop, review-roll, and og-sol-loop.
 
 ## Dependencies between skills
 

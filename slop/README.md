@@ -4,7 +4,7 @@ Rougher, less-tested extras.
 
 | Path | What it is |
 |---|---|
-| `LESSONS.md` | 18 lessons from the multi-agent project, each with what to do instead. Reference only; agents don't need it. |
+| `LESSONS.md` | Reference on coordinating multiple coding agents. |
 | `memories/` | Three example Claude Code memories and their `MEMORY.md` index. `memories/INDEX.md` describes each rule. |
 | `slop-skills/` | Twelve more skills; see its README. |
 | `fix-ledger/` | Keeps requested fixes from going missing; see its README. |
