@@ -1,11 +1,11 @@
 # Memory index
 
-Example Claude Code memories, in the format Claude Code saves them, with `MEMORY.md` as their index. Each rule is also in `../../AGENTS.md`, so these are only needed if you want the rules as Claude Code memories too.
+Example Claude Code memories, in the format Claude Code saves them, with `MEMORY.md` as their index.
 
-| Memory | Where the rule lives in AGENTS.md |
+| Memory | Rule |
 |---|---|
-| [code-blocks-only-for-code.md](code-blocks-only-for-code.md) | "Replies" |
-| [never-test-real-commands.md](never-test-real-commands.md) | "Accuracy and corrections" |
-| [ambiguous-short-message-no-action.md](ambiguous-short-message-no-action.md) | "Reading the human" |
+| [code-blocks-only-for-code.md](code-blocks-only-for-code.md) | Use code blocks only for code or commands to paste. |
+| [never-test-real-commands.md](never-test-real-commands.md) | Test changes with fakes instead of real stop or control commands. |
+| [ambiguous-short-message-no-action.md](ambiguous-short-message-no-action.md) | Clarify ambiguous short messages before hard-to-undo actions. |
 
-To install them into a project's memory, see the README.
+To install them into a project's memory, see [../README.md](../README.md).
